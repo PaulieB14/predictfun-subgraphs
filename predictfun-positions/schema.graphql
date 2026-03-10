@@ -1,0 +1,162 @@
+# Best practices: Bytes IDs, immutable event logs, @derivedFrom, no eth_calls, pruning
+
+# ─── Global ───────────────────────────────────────────────────────────────────
+
+type Global @entity {
+  "Singleton: 0x00"
+  id: Bytes!
+  totalSplits: BigInt!
+  totalMerges: BigInt!
+  totalRedemptions: BigInt!
+  totalSplitVolume: BigDecimal!
+  totalMergeVolume: BigDecimal!
+  totalPayouts: BigDecimal!
+  totalOpenInterest: BigDecimal!
+  activeConditions: BigInt!
+}
+
+# ─── Condition ────────────────────────────────────────────────────────────────
+
+type Condition @entity {
+  "ID = conditionId bytes"
+  id: Bytes!
+  oracle: Bytes!
+  questionId: Bytes!
+  outcomeSlotCount: BigInt!
+  resolved: Boolean!
+  payoutNumerators: [BigInt!]
+  openInterest: BigDecimal!
+  splitCount: BigInt!
+  mergeCount: BigInt!
+  createdAt: BigInt!
+  createdAtBlock: BigInt!
+  resolvedAt: BigInt
+  resolvedAtBlock: BigInt
+  source: String!
+  splits: [SplitEvent!]! @derivedFrom(field: "condition")
+  merges: [MergeEvent!]! @derivedFrom(field: "condition")
+  redemptions: [RedemptionEvent!]! @derivedFrom(field: "condition")
+  positions: [UserPosition!]! @derivedFrom(field: "condition")
+}
+
+# ─── Market Open Interest ─────────────────────────────────────────────────────
+
+type MarketOpenInterest @entity {
+  "ID = conditionId bytes"
+  id: Bytes!
+  condition: Condition!
+  amount: BigDecimal!
+  splitCount: BigInt!
+  mergeCount: BigInt!
+  lastUpdated: BigInt!
+}
+
+# ─── User Position ───────────────────────────────────────────────────────────
+
+type UserPosition @entity {
+  "ID = user address + conditionId"
+  id: Bytes!
+  user: Account!
+  condition: Condition!
+  netQuantity: BigDecimal!
+  totalSplit: BigDecimal!
+  totalMerged: BigDecimal!
+  totalRedeemed: BigDecimal!
+  realizedPayout: BigDecimal!
+  lastUpdated: BigInt!
+}
+
+# ─── Account ─────────────────────────────────────────────────────────────────
+
+type Account @entity {
+  "ID = address bytes"
+  id: Bytes!
+  splitCount: BigInt!
+  mergeCount: BigInt!
+  redeemCount: BigInt!
+  totalSplitVolume: BigDecimal!
+  totalMergeVolume: BigDecimal!
+  totalPayouts: BigDecimal!
+  firstSeenAt: BigInt!
+  lastActiveAt: BigInt!
+  positions: [UserPosition!]! @derivedFrom(field: "user")
+}
+
+# ─── Event Logs (immutable, Bytes IDs) ────────────────────────────────────────
+
+type SplitEvent @entity(immutable: true) {
+  "ID = txHash.concatI32(logIndex)"
+  id: Bytes!
+  stakeholder: Bytes!
+  condition: Condition!
+  collateralToken: Bytes!
+  amount: BigDecimal!
+  source: String!
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  transactionHash: Bytes!
+}
+
+type MergeEvent @entity(immutable: true) {
+  "ID = txHash.concatI32(logIndex)"
+  id: Bytes!
+  stakeholder: Bytes!
+  condition: Condition!
+  collateralToken: Bytes!
+  amount: BigDecimal!
+  source: String!
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  transactionHash: Bytes!
+}
+
+type RedemptionEvent @entity(immutable: true) {
+  "ID = txHash.concatI32(logIndex)"
+  id: Bytes!
+  redeemer: Bytes!
+  condition: Condition!
+  payout: BigDecimal!
+  source: String!
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  transactionHash: Bytes!
+}
+
+type NegRiskConversionEvent @entity(immutable: true) {
+  "ID = txHash.concatI32(logIndex)"
+  id: Bytes!
+  stakeholder: Bytes!
+  marketId: Bytes!
+  indexSet: BigInt!
+  amount: BigDecimal!
+  source: String!
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  transactionHash: Bytes!
+}
+
+type OutcomeReportedEvent @entity(immutable: true) {
+  "ID = txHash.concatI32(logIndex)"
+  id: Bytes!
+  marketId: Bytes!
+  questionId: Bytes!
+  outcome: Boolean!
+  source: String!
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  transactionHash: Bytes!
+}
+
+type TransferEvent @entity(immutable: true) {
+  "ID = txHash.concatI32(logIndex)"
+  id: Bytes!
+  operator: Bytes!
+  from: Bytes!
+  to: Bytes!
+  tokenId: BigInt!
+  value: BigDecimal!
+  source: String!
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  transactionHash: Bytes!
+}
