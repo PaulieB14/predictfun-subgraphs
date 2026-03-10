@@ -72,6 +72,47 @@ function exchangeLabel(address: Bytes): string {
   return address.toHexString();
 }
 
+// Extracts the question/title from ancillary data text
+// Handles both formats:
+//   Questions: "question: Atlanta vs New York Winner?, description: ..."
+//   Markets:   "q: title: F1 Drivers Champion, description: ..."
+function extractTitle(text: string): string | null {
+  // Try "question: " first (question-level data)
+  let prefix = "question: ";
+  let start = text.indexOf(prefix);
+  if (start != -1) {
+    start = start + prefix.length;
+  } else {
+    // Try "q: title: " (market-level data)
+    prefix = "q: title: ";
+    start = text.indexOf(prefix);
+    if (start != -1) {
+      start = start + prefix.length;
+    } else {
+      return null;
+    }
+  }
+  let descIdx = text.indexOf(", description: ", start);
+  let end = descIdx > start ? descIdx : text.length;
+  let value = text.substring(start, end);
+  return value.length > 0 ? value : null;
+}
+
+function extractDescription(text: string): string | null {
+  let prefix = ", description: ";
+  let start = text.indexOf(prefix);
+  if (start == -1) {
+    prefix = "description: ";
+    start = text.indexOf(prefix);
+    if (start == -1) return null;
+    start = start + prefix.length;
+  } else {
+    start = start + prefix.length;
+  }
+  let value = text.substring(start);
+  return value.length > 0 ? value : null;
+}
+
 function feeModuleLabel(address: Bytes): string {
   if (address.equals(FEE_YIELD_ADDR)) return "FEE_YIELD";
   if (address.equals(FEE_NON_YIELD_ADDR)) return "FEE_NON_YIELD";
@@ -359,6 +400,9 @@ export function handleMarketPrepared(event: MarketPrepared): void {
     m.oracle = event.params.oracle;
     m.feeBips = event.params.feeBips;
     m.data = event.params.data;
+    let text = event.params.data.toString();
+    m.title = extractTitle(text);
+    m.description = extractDescription(text);
     m.questionCount = ZERO;
     m.createdAt = event.block.timestamp;
     m.createdAtBlock = event.block.number;
@@ -376,6 +420,9 @@ export function handleQuestionPrepared(event: QuestionPrepared): void {
     q.market = event.params.marketId;
     q.index = event.params.index;
     q.data = event.params.data;
+    let text = event.params.data.toString();
+    q.question = extractTitle(text);
+    q.description = extractDescription(text);
     q.createdAt = event.block.timestamp;
     q.save();
 

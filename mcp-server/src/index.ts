@@ -62,6 +62,34 @@ function fmtAddr(addr: string): string {
   return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
 }
 
+// Resolve condition/market IDs to human-readable names via NegRisk data
+async function resolveMarketNames(conditionIds: string[]): Promise<Map<string, string>> {
+  const names = new Map<string, string>();
+  if (conditionIds.length === 0) return names;
+
+  // Try to find as NegRisk questions (most markets are NegRisk)
+  const qFilter = conditionIds.map((id) => `"${id}"`).join(", ");
+  try {
+    const data = await query(
+      ENDPOINTS.orderbook,
+      `{ negRiskQuestions(where: { id_in: [${qFilter}] }) { id question market { id title } } negRiskMarkets(where: { id_in: [${qFilter}] }) { id title } }`
+    );
+    for (const q of data.negRiskQuestions || []) {
+      names.set(q.id, q.question || q.market?.title || fmtAddr(q.id));
+    }
+    for (const m of data.negRiskMarkets || []) {
+      if (m.title) names.set(m.id, m.title);
+    }
+  } catch {
+    // Fallback: names stay empty, we'll show truncated IDs
+  }
+  return names;
+}
+
+function marketLabel(id: string, names: Map<string, string>): string {
+  return names.get(id) || fmtAddr(id);
+}
+
 // ─── MCP Server ──────────────────────────────────────────────────────────────
 
 const server = new McpServer({
@@ -159,12 +187,14 @@ server.tool(
         ENDPOINTS.positions,
         `{ conditions(first: ${limit}, orderBy: openInterest, orderDirection: desc, where: { openInterest_gt: "0" }) { id openInterest splitCount mergeCount resolved source outcomeSlotCount } }`
       );
+      const ids = data.conditions.map((c: any) => c.id);
+      const names = await resolveMarketNames(ids);
       lines.push(`# Top ${limit} Markets by Open Interest\n`);
-      lines.push("| # | Condition ID | Open Interest | Splits | Merges | Resolved | Source |");
-      lines.push("|---|---|---|---|---|---|---|");
+      lines.push("| # | Market | Open Interest | Splits | Merges | Resolved |");
+      lines.push("|---|---|---|---|---|---|");
       data.conditions.forEach((c: any, i: number) => {
         lines.push(
-          `| ${i + 1} | ${fmtAddr(c.id)} | ${fmtUsd(c.openInterest)} | ${c.splitCount} | ${c.mergeCount} | ${c.resolved ? "Yes" : "No"} | ${c.source} |`
+          `| ${i + 1} | ${marketLabel(c.id, names)} | ${fmtUsd(c.openInterest)} | ${c.splitCount} | ${c.mergeCount} | ${c.resolved ? "Yes" : "No"} |`
         );
       });
     } else {
@@ -173,13 +203,15 @@ server.tool(
         ENDPOINTS.orderbook,
         `{ markets(first: ${limit}, orderBy: ${orderBy}, orderDirection: desc) { id volume tradeCount fees exchange } }`
       );
+      const ids = (data?.markets || []).map((m: any) => m.id);
+      const names = await resolveMarketNames(ids);
       const label = rank_by === "trades" ? "Trade Count" : "Volume";
       lines.push(`# Top ${limit} Markets by ${label}\n`);
-      lines.push("| # | Condition ID | Volume | Trades | Fees | Exchange |");
+      lines.push("| # | Market | Volume | Trades | Fees | Exchange |");
       lines.push("|---|---|---|---|---|---|");
       (data?.markets || []).forEach((m: any, i: number) => {
         lines.push(
-          `| ${i + 1} | ${fmtAddr(m.id)} | ${fmtUsd(m.volume)} | ${parseInt(m.tradeCount).toLocaleString()} | ${fmtUsd(m.fees)} | ${m.exchange} |`
+          `| ${i + 1} | ${marketLabel(m.id, names)} | ${fmtUsd(m.volume)} | ${parseInt(m.tradeCount).toLocaleString()} | ${fmtUsd(m.fees)} | ${m.exchange} |`
         );
       });
     }
@@ -226,7 +258,9 @@ server.tool(
       };
     }
 
-    lines.push(`# Market ${fmtAddr(condition_id)}\n`);
+    const names = await resolveMarketNames([id]);
+    const title = names.get(id);
+    lines.push(`# ${title ? title : `Market ${fmtAddr(condition_id)}`}\n`);
 
     if (cond) {
       lines.push("## Condition");
@@ -334,12 +368,14 @@ server.tool(
     }
 
     if (posData.userPositions.length > 0) {
+      const posIds = posData.userPositions.map((p: any) => p.condition.id);
+      const posNames = await resolveMarketNames(posIds);
       lines.push("\n## Active Positions");
       lines.push("| Market | Net Position | Invested | Merged | Resolved |");
       lines.push("|---|---|---|---|---|");
       posData.userPositions.forEach((p: any) => {
         lines.push(
-          `| ${fmtAddr(p.condition.id)} | ${fmtUsd(p.netQuantity)} | ${fmtUsd(p.totalSplit)} | ${fmtUsd(p.totalMerged)} | ${p.condition.resolved ? "Yes" : "No"} |`
+          `| ${marketLabel(p.condition.id, posNames)} | ${fmtUsd(p.netQuantity)} | ${fmtUsd(p.totalSplit)} | ${fmtUsd(p.totalMerged)} | ${p.condition.resolved ? "Yes" : "No"} |`
         );
       });
     }
@@ -395,12 +431,14 @@ server.tool(
           ENDPOINTS.positions,
           `{ splitEvents(first: ${limit}, orderBy: timestamp, orderDirection: desc) { id stakeholder amount source timestamp condition { id resolved } } }`
         );
+        const splitIds = data.splitEvents.map((e: any) => e.condition.id);
+        const splitNames = await resolveMarketNames(splitIds);
         lines.push(`# Recent ${limit} Position Splits\n`);
-        lines.push("| Time | User | Amount | Source | Market | Resolved |");
-        lines.push("|---|---|---|---|---|---|");
+        lines.push("| Time | User | Amount | Market |");
+        lines.push("|---|---|---|---|");
         data.splitEvents.forEach((e: any) => {
           lines.push(
-            `| ${fmtDate(e.timestamp)} | ${fmtAddr(e.stakeholder)} | ${fmtUsd(e.amount)} | ${e.source} | ${fmtAddr(e.condition.id)} | ${e.condition.resolved ? "Yes" : "No"} |`
+            `| ${fmtDate(e.timestamp)} | ${fmtAddr(e.stakeholder)} | ${fmtUsd(e.amount)} | ${marketLabel(e.condition.id, splitNames)} |`
           );
         });
         break;
@@ -411,12 +449,14 @@ server.tool(
           ENDPOINTS.positions,
           `{ mergeEvents(first: ${limit}, orderBy: timestamp, orderDirection: desc) { id stakeholder amount source timestamp condition { id resolved } } }`
         );
+        const mergeIds = data.mergeEvents.map((e: any) => e.condition.id);
+        const mergeNames = await resolveMarketNames(mergeIds);
         lines.push(`# Recent ${limit} Position Merges\n`);
-        lines.push("| Time | User | Amount | Source | Market | Resolved |");
-        lines.push("|---|---|---|---|---|---|");
+        lines.push("| Time | User | Amount | Market |");
+        lines.push("|---|---|---|---|");
         data.mergeEvents.forEach((e: any) => {
           lines.push(
-            `| ${fmtDate(e.timestamp)} | ${fmtAddr(e.stakeholder)} | ${fmtUsd(e.amount)} | ${e.source} | ${fmtAddr(e.condition.id)} | ${e.condition.resolved ? "Yes" : "No"} |`
+            `| ${fmtDate(e.timestamp)} | ${fmtAddr(e.stakeholder)} | ${fmtUsd(e.amount)} | ${marketLabel(e.condition.id, mergeNames)} |`
           );
         });
         break;
@@ -427,9 +467,11 @@ server.tool(
           ENDPOINTS.positions,
           `{ redemptionEvents(first: ${limit}, orderBy: timestamp, orderDirection: desc) { id redeemer payout source timestamp condition { id payoutNumerators } } }`
         );
+        const redeemIds = data.redemptionEvents.map((e: any) => e.condition.id);
+        const redeemNames = await resolveMarketNames(redeemIds);
         lines.push(`# Recent ${limit} Redemptions\n`);
-        lines.push("| Time | Redeemer | Payout | Source | Market | Winning Outcome |");
-        lines.push("|---|---|---|---|---|---|");
+        lines.push("| Time | Redeemer | Payout | Market | Winner |");
+        lines.push("|---|---|---|---|---|");
         data.redemptionEvents.forEach((e: any) => {
           const winner = e.condition.payoutNumerators
             ? e.condition.payoutNumerators.indexOf("1") === 0
@@ -437,7 +479,7 @@ server.tool(
               : "No"
             : "N/A";
           lines.push(
-            `| ${fmtDate(e.timestamp)} | ${fmtAddr(e.redeemer)} | ${fmtUsd(e.payout)} | ${e.source} | ${fmtAddr(e.condition.id)} | ${winner} |`
+            `| ${fmtDate(e.timestamp)} | ${fmtAddr(e.redeemer)} | ${fmtUsd(e.payout)} | ${marketLabel(e.condition.id, redeemNames)} | ${winner} |`
           );
         });
         break;
@@ -543,10 +585,13 @@ server.tool(
       `{ userPositions(first: ${limit}, orderBy: netQuantity, orderDirection: desc, where: { netQuantity_gt: "${min_position}" }) { id user { id totalSplitVolume totalPayouts } netQuantity totalSplit totalMerged realizedPayout condition { id openInterest resolved source } } }`
     );
 
+    const whaleIds = data.userPositions.map((p: any) => p.condition.id);
+    const whaleNames = await resolveMarketNames(whaleIds);
+
     const lines = [
       `# Whale Positions (min ${fmtUsd(min_position.toString())})\n`,
-      "| # | Trader | Position | Market | Market OI | Resolved | % of OI |",
-      "|---|---|---|---|---|---|---|",
+      "| # | Trader | Position | Market | Market OI | % of OI |",
+      "|---|---|---|---|---|---|",
     ];
 
     data.userPositions.forEach((p: any, i: number) => {
@@ -559,7 +604,7 @@ server.tool(
             ).toFixed(1)
           : "N/A";
       lines.push(
-        `| ${i + 1} | ${fmtAddr(p.user.id)} | ${fmtUsd(p.netQuantity)} | ${fmtAddr(p.condition.id)} | ${fmtUsd(p.condition.openInterest)} | ${p.condition.resolved ? "Yes" : "No"} | ${pctOi}% |`
+        `| ${i + 1} | ${fmtAddr(p.user.id)} | ${fmtUsd(p.netQuantity)} | ${marketLabel(p.condition.id, whaleNames)} | ${fmtUsd(p.condition.openInterest)} | ${pctOi}% |`
       );
     });
 
@@ -644,10 +689,13 @@ server.tool(
       `{ conditions(first: ${limit}, orderBy: resolvedAt, orderDirection: desc, where: { resolved: true }) { id outcomeSlotCount payoutNumerators openInterest splitCount mergeCount createdAt resolvedAt source } }`
     );
 
+    const resolvedIds = data.conditions.map((c: any) => c.id);
+    const resolvedNames = await resolveMarketNames(resolvedIds);
+
     const lines = [
       `# Recently Resolved Markets\n`,
-      "| # | Market | Winning | OI at Resolution | Splits | Resolved At | Source |",
-      "|---|---|---|---|---|---|---|",
+      "| # | Market | Winning | OI at Resolution | Splits | Resolved At |",
+      "|---|---|---|---|---|---|",
     ];
 
     data.conditions.forEach((c: any, i: number) => {
@@ -655,7 +703,7 @@ server.tool(
       const winner =
         winIdx === 0 ? "Outcome A (Yes)" : winIdx === 1 ? "Outcome B (No)" : `Outcome ${winIdx}`;
       lines.push(
-        `| ${i + 1} | ${fmtAddr(c.id)} | ${winner} | ${fmtUsd(c.openInterest)} | ${c.splitCount} | ${fmtDate(c.resolvedAt)} | ${c.source} |`
+        `| ${i + 1} | ${marketLabel(c.id, resolvedNames)} | ${winner} | ${fmtUsd(c.openInterest)} | ${c.splitCount} | ${fmtDate(c.resolvedAt)} |`
       );
     });
 
