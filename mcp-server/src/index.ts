@@ -658,6 +658,174 @@ server.tool(
   }
 );
 
+// ─── Tool: Custom Query ──────────────────────────────────────────────────────
+
+server.tool(
+  "query_subgraph",
+  "Run a custom GraphQL query against any Predict.fun subgraph. Use this for advanced queries not covered by other tools.",
+  {
+    subgraph: z
+      .enum(["orderbook", "positions", "yield"])
+      .describe("Which subgraph to query"),
+    graphql_query: z
+      .string()
+      .describe("The GraphQL query string"),
+  },
+  async ({ subgraph, graphql_query }) => {
+    const endpoint = ENDPOINTS[subgraph];
+    const allowErrors = subgraph === "orderbook";
+    const data = await query(endpoint, graphql_query, allowErrors);
+    return {
+      content: [
+        { type: "text", text: JSON.stringify(data, null, 2) },
+      ],
+    };
+  }
+);
+
+// ─── Prompts ─────────────────────────────────────────────────────────────────
+
+server.prompt(
+  "platform_overview",
+  "Get a full overview of the Predict.fun platform",
+  () => ({
+    messages: [
+      {
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: "Give me a full overview of Predict.fun — platform stats, top markets, biggest whales, and yield status. Use get_platform_stats, get_top_markets, get_whale_positions, and get_yield_overview.",
+        },
+      },
+    ],
+  })
+);
+
+server.prompt(
+  "analyze_trader",
+  "Analyze a specific trader's activity and P&L",
+  { address: z.string().describe("Trader wallet address (0x...)") },
+  ({ address }) => ({
+    messages: [
+      {
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: `Analyze trader ${address} on Predict.fun. Use get_trader_profile to get their full trading history, positions, and P&L. Then check if they appear on the leaderboard with get_leaderboard. Summarize whether they're profitable, what markets they're active in, and their trading style (maker vs taker).`,
+        },
+      },
+    ],
+  })
+);
+
+server.prompt(
+  "market_deep_dive",
+  "Deep dive into a specific prediction market",
+  { condition_id: z.string().describe("Market conditionId (0x...)") },
+  ({ condition_id }) => ({
+    messages: [
+      {
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: `Do a deep dive on Predict.fun market ${condition_id}. Use get_market_details for the full picture — volume, open interest, resolution status, and top holders. Then use get_recent_activity with type "trades" to see latest activity. Analyze: Is this market active? Who are the biggest participants? Is the OI growing or shrinking?`,
+        },
+      },
+    ],
+  })
+);
+
+server.prompt(
+  "yield_analysis",
+  "Analyze Predict.fun's Venus Protocol yield mechanics",
+  () => ({
+    messages: [
+      {
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: "Analyze Predict.fun's yield-bearing mechanics. Use get_yield_overview to see Venus Protocol deposits, redemptions, and yield claims. Also use get_platform_stats for context on total OI vs yield deposits. Calculate the yield APY based on the claim data. How much of the platform's collateral is earning yield?",
+        },
+      },
+    ],
+  })
+);
+
+server.prompt(
+  "whale_alert",
+  "Find the biggest players and their market positions",
+  () => ({
+    messages: [
+      {
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: "Show me the whales on Predict.fun. Use get_whale_positions with a minimum of $10,000. Then use get_leaderboard ranked by payouts to find the most profitable traders. For the top 3 whales, use get_trader_profile to understand their strategies. Are they concentrated in specific markets or diversified?",
+        },
+      },
+    ],
+  })
+);
+
+server.prompt(
+  "market_scanner",
+  "Scan for interesting markets — highest volume, most OI, recently resolved",
+  () => ({
+    messages: [
+      {
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: "Scan the Predict.fun markets for me. Use get_top_markets ranked by volume (top 10), then by open_interest (top 10), then by trades (top 10). Also use get_resolved_markets to see the 5 most recently resolved markets and their outcomes. Which markets are the most active right now? Any with unusually high OI relative to volume?",
+        },
+      },
+    ],
+  })
+);
+
+server.prompt(
+  "custom_query_examples",
+  "Show example GraphQL queries for each Predict.fun subgraph",
+  () => ({
+    messages: [
+      {
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: `Show me example custom GraphQL queries I can run with query_subgraph. Here are some useful ones:
+
+**Orderbook** — Recent large trades (>$1000):
+\`\`\`graphql
+{ orderFilledEvents(first: 10, orderBy: timestamp, orderDirection: desc, where: { makerAmountFilled_gt: "1000" }, subgraphError: allow) { maker { id } taker { id } makerAmountFilled price side exchange timestamp } }
+\`\`\`
+
+**Positions** — All positions for a specific market:
+\`\`\`graphql
+{ userPositions(first: 50, where: { condition: "0x1141...", netQuantity_gt: "0" }, orderBy: netQuantity, orderDirection: desc) { user { id } netQuantity totalSplit totalMerged } }
+\`\`\`
+
+**Positions** — Markets created in the last 24 hours:
+\`\`\`graphql
+{ conditions(first: 20, orderBy: createdAt, orderDirection: desc, where: { createdAt_gt: "UNIX_TIMESTAMP" }) { id outcomeSlotCount openInterest source createdAt } }
+\`\`\`
+
+**Yield** — Token mapping details:
+\`\`\`graphql
+{ tokenMappings { underlying vToken enabled totalVTokenMinted totalRedeemed totalYieldClaimed } }
+\`\`\`
+
+**Positions** — NegRisk conversion events:
+\`\`\`graphql
+{ negRiskConversionEvents(first: 10, orderBy: timestamp, orderDirection: desc) { stakeholder marketId indexSet amount source timestamp } }
+\`\`\`
+
+Run any of these with the query_subgraph tool, specifying the subgraph name and the query.`,
+        },
+      },
+    ],
+  })
+);
+
 // ─── Start Server ────────────────────────────────────────────────────────────
 
 async function main() {
