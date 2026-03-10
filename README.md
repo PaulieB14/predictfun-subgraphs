@@ -86,14 +86,6 @@ npx graph build
 npx graph deploy predictfun-<subgraph> --version-label v0.0.1
 ```
 
-## Query Endpoints
-
-| Subgraph | Endpoint |
-|---|---|
-| predictfun-orderbook | `api.studio.thegraph.com/query/1717345/predictfun-orderbook/v0.0.1` |
-| predictfun-positions | `api.studio.thegraph.com/query/1717345/predictfun-positions/v0.0.1` |
-| predictfun-yield | `api.studio.thegraph.com/query/1717345/predictfun-yield/v0.0.1` |
-
 ## License
 
 MIT
