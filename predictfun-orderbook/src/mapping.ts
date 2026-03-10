@@ -136,17 +136,26 @@ export function handleOrderFilled(event: OrderFilled): void {
   let exchange = exchangeLabel(event.address);
 
   let isBuy = event.params.makerAssetId.isZero();
-  let side = isBuy ? "BUY" : "SELL";
-
+  let side: string;
+  let tokenId: BigInt;
+  let volume: BigDecimal;
   let price = ZERO_BD;
-  if (isBuy && takerAmount.gt(ZERO_BD)) {
-    price = makerAmount.div(takerAmount);
-  } else if (!isBuy && makerAmount.gt(ZERO_BD)) {
-    price = takerAmount.div(makerAmount);
-  }
 
-  let tokenId = isBuy ? event.params.takerAssetId : event.params.makerAssetId;
-  let volume = isBuy ? makerAmount : takerAmount;
+  if (isBuy) {
+    side = "BUY";
+    tokenId = event.params.takerAssetId;
+    volume = makerAmount;
+    if (takerAmount.gt(ZERO_BD)) {
+      price = makerAmount.div(takerAmount);
+    }
+  } else {
+    side = "SELL";
+    tokenId = event.params.makerAssetId;
+    volume = takerAmount;
+    if (makerAmount.gt(ZERO_BD)) {
+      price = takerAmount.div(makerAmount);
+    }
+  }
   let obId = tokenIdToBytes(tokenId);
 
   // Save immutable event
@@ -200,14 +209,15 @@ export function handleOrderFilled(event: OrderFilled): void {
 
   // Update market stats if orderbook is linked to a market
   let marketId = ob.market;
-  if (marketId !== null) {
+  if (changetype<usize>(marketId) != 0) {
     let m = Market.load(marketId as Bytes);
-    if (m !== null) {
-      m.volume = m.volume.plus(volume);
-      m.tradeCount = m.tradeCount.plus(ONE);
-      m.fees = m.fees.plus(fee);
-      m.lastTradeAt = event.block.timestamp;
-      m.save();
+    if (changetype<usize>(m) != 0) {
+      let market = m as Market;
+      market.volume = market.volume.plus(volume);
+      market.tradeCount = market.tradeCount.plus(ONE);
+      market.fees = market.fees.plus(fee);
+      market.lastTradeAt = event.block.timestamp;
+      market.save();
     }
   }
 
@@ -365,9 +375,10 @@ export function handleQuestionPrepared(event: QuestionPrepared): void {
     q.save();
 
     let m = NegRiskMarket.load(event.params.marketId);
-    if (m !== null) {
-      m.questionCount = m.questionCount.plus(ONE);
-      m.save();
+    if (changetype<usize>(m) != 0) {
+      let market = m as NegRiskMarket;
+      market.questionCount = market.questionCount.plus(ONE);
+      market.save();
     }
   }
 }
