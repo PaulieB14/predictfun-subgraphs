@@ -105,8 +105,9 @@ An MCP (Model Context Protocol) server that gives AI agents structured access to
 
 Subgraph IDs are built in. Queries go through [The Graph Gateway](https://thegraph.com/docs/en/querying/graphql-api/) and are billed to your API key.
 
-### Tools (10)
+### Tools (14)
 
+#### Data Tools
 | Tool | Description |
 |---|---|
 | `get_platform_stats` | Full platform overview — volume, OI, yield, sync status |
@@ -120,9 +121,19 @@ Subgraph IDs are built in. Queries go through [The Graph Gateway](https://thegra
 | `get_resolved_markets` | Recently settled markets with outcomes |
 | `query_subgraph` | Custom GraphQL against any subgraph |
 
-### Prompts (7)
+#### Meta-Tools (agent reasoning layer)
+| Tool | Description |
+|---|---|
+| `find_trader_persona` | Classify a trader into archetypes: whale accumulator, yield farmer, arbitrageur, early mover, resolution sniper |
+| `scan_trader_personas` | Find traders matching a specific behavioral archetype across the platform |
+| `tag_market_structure` | Tag a market by resolution latency, liquidity profile, oracle type, and tail-risk indicators |
+| `scan_markets_by_structure` | Find markets by structural filter: resolution speed, liquidity depth, oracle type, OI concentration, tail risk |
 
-Pre-built workflows: `platform_overview`, `analyze_trader`, `market_deep_dive`, `yield_analysis`, `whale_alert`, `market_scanner`, `custom_query_examples`
+Meta-tools return structured JSON so agents can reason programmatically over trader behavior and market quality — not just raw volume and OI.
+
+### Prompts (9)
+
+Pre-built workflows: `platform_overview`, `analyze_trader`, `market_deep_dive`, `yield_analysis`, `whale_alert`, `market_scanner`, `custom_query_examples`, `trader_persona_analysis`, `market_quality_scan`
 
 ## Subgraph Development
 

@@ -53,7 +53,9 @@ docker run -e GRAPH_API_KEY=your-key-here predictfun-mcp
 
 That's it — subgraph IDs are built in. Queries go through [The Graph Gateway](https://thegraph.com/docs/en/querying/graphql-api/) and are billed to your API key.
 
-## Tools (10)
+## Tools (14)
+
+### Data Tools
 
 | Tool | Description |
 |---|---|
@@ -68,7 +70,24 @@ That's it — subgraph IDs are built in. Queries go through [The Graph Gateway](
 | `get_resolved_markets` | Recently settled markets with outcomes |
 | `query_subgraph` | Custom GraphQL against any subgraph |
 
-## Prompts (7)
+### Meta-Tools (agent reasoning layer)
+
+These tools let agents reason about **trader behavior** and **market quality** — not just raw data.
+
+| Tool | Description |
+|---|---|
+| `find_trader_persona` | Classify a trader into archetypes: whale accumulator, yield farmer, arbitrageur, early mover, resolution sniper |
+| `scan_trader_personas` | Find traders matching a specific behavioral archetype across the platform |
+| `tag_market_structure` | Tag a market by resolution latency, liquidity profile, oracle type, and tail-risk indicators |
+| `scan_markets_by_structure` | Find markets by structural filter: resolution speed, liquidity depth, oracle type, OI concentration, tail risk |
+
+**Trader Personas:** whale_accumulator, yield_farmer, arbitrageur, early_mover, resolution_sniper
+
+**Market Structural Filters:** fast_resolution, slow_resolution, stale, deep_liquidity, thin_liquidity, dormant, uma_oracle, concentrated_oi, high_tail_risk
+
+All meta-tools return structured JSON for programmatic agent consumption.
+
+## Prompts (9)
 
 Pre-built workflows for common analysis:
 
@@ -81,6 +100,8 @@ Pre-built workflows for common analysis:
 | `whale_alert` | Find biggest players and their positions |
 | `market_scanner` | Scan for interesting markets across all rankings |
 | `custom_query_examples` | Example GraphQL queries for each subgraph |
+| `trader_persona_analysis` | Classify traders by behavioral archetypes and find similar traders |
+| `market_quality_scan` | Scan markets by structural quality indicators to find opportunities or risks |
 
 ## Architecture
 
@@ -105,6 +126,10 @@ Ask your AI agent:
 - "Who are the whales betting on the FIFA World Cup?"
 - "What's the yield being generated through Venus?"
 - "Find recently resolved markets and their outcomes"
+- "What type of trader is 0x1234...? Are they a whale, arbitrageur, or sniper?"
+- "Find all resolution snipers on the platform"
+- "Which markets have concentrated OI or tail risk?"
+- "Run a full market quality scan — what's deep liquidity vs dormant?"
 
 ## License
 
