@@ -1,0 +1,45 @@
+[
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "internalType": "address", "name": "requester", "type": "address" },
+      { "indexed": true, "internalType": "bytes32", "name": "identifier", "type": "bytes32" },
+      { "indexed": false, "internalType": "uint256", "name": "timestamp", "type": "uint256" },
+      { "indexed": false, "internalType": "bytes", "name": "ancillaryData", "type": "bytes" },
+      { "indexed": false, "internalType": "address", "name": "currency", "type": "address" },
+      { "indexed": false, "internalType": "uint256", "name": "reward", "type": "uint256" },
+      { "indexed": false, "internalType": "uint256", "name": "finalFee", "type": "uint256" }
+    ],
+    "name": "RequestPrice",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "internalType": "address", "name": "requester", "type": "address" },
+      { "indexed": true, "internalType": "address", "name": "proposer", "type": "address" },
+      { "indexed": true, "internalType": "bytes32", "name": "identifier", "type": "bytes32" },
+      { "indexed": false, "internalType": "uint256", "name": "timestamp", "type": "uint256" },
+      { "indexed": false, "internalType": "bytes", "name": "ancillaryData", "type": "bytes" },
+      { "indexed": false, "internalType": "int256", "name": "proposedPrice", "type": "int256" },
+      { "indexed": false, "internalType": "uint256", "name": "expirationTimestamp", "type": "uint256" },
+      { "indexed": false, "internalType": "address", "name": "currency", "type": "address" }
+    ],
+    "name": "ProposePrice",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "internalType": "address", "name": "requester", "type": "address" },
+      { "indexed": true, "internalType": "address", "name": "proposer", "type": "address" },
+      { "indexed": true, "internalType": "bytes32", "name": "identifier", "type": "bytes32" },
+      { "indexed": false, "internalType": "uint256", "name": "timestamp", "type": "uint256" },
+      { "indexed": false, "internalType": "bytes", "name": "ancillaryData", "type": "bytes" },
+      { "indexed": false, "internalType": "int256", "name": "price", "type": "int256" },
+      { "indexed": false, "internalType": "uint256", "name": "payout", "type": "uint256" }
+    ],
+    "name": "Settle",
+    "type": "event"
+  }
+]

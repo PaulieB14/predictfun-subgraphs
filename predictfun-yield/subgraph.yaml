@@ -1,0 +1,103 @@
+specVersion: 1.3.0
+schema:
+  file: ./schema.graphql
+indexerHints:
+  prune: auto
+features:
+  - nonFatalErrors
+dataSources:
+  # ─── YieldBearingConditionalTokens ──────────────────────────────────────────
+  - kind: ethereum
+    name: YieldBearingConditionalTokens
+    network: bsc
+    source:
+      address: "0x9400F8Ad57e9e0F352345935d6D3175975eb1d9F"
+      abi: YieldBearingConditionalTokens
+      startBlock: 64817753
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.9
+      language: wasm/assemblyscript
+      entities:
+        - YieldGlobal
+        - TokenMapping
+        - YieldClaimEvent
+        - VTokenMintEvent
+        - UnderlyingRedeemedEvent
+        - UnderlyingEnabledEvent
+        - UnderlyingDisabledEvent
+      abis:
+        - name: YieldBearingConditionalTokens
+          file: ./abis/YieldBearingConditionalTokens.json
+      eventHandlers:
+        - event: YieldClaimed(indexed address,indexed address,uint256,uint256)
+          handler: handleYieldClaimed
+        - event: VTokenMinted(indexed address,indexed address,uint256)
+          handler: handleVTokenMinted
+        - event: UnderlyingTokenRedeemed(indexed address,indexed address,uint256,uint256)
+          handler: handleUnderlyingTokenRedeemed
+        - event: UnderlyingTokenEnabled(indexed address,uint256)
+          handler: handleUnderlyingTokenEnabled
+        - event: UnderlyingTokenDisabled(indexed address,uint256,address,uint256)
+          handler: handleUnderlyingTokenDisabled
+        - event: UnderlyingTokenConnectedToVToken(address,address)
+          handler: handleUnderlyingTokenConnectedToVToken
+      file: ./src/mapping.ts
+
+  # ─── RewardDistributor ─────────────────────────────────────────────────────
+  - kind: ethereum
+    name: RewardDistributor
+    network: bsc
+    source:
+      address: "0x14e3a0a4aB4e4Fa60FC6b4aCce200afAD9233ecE"
+      abi: RewardDistributor
+      startBlock: 64817753
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.9
+      language: wasm/assemblyscript
+      entities:
+        - YieldGlobal
+        - YieldAccount
+        - RewardRound
+        - RewardClaimEvent
+        - RewardDistributionEvent
+      abis:
+        - name: RewardDistributor
+          file: ./abis/RewardDistributor.json
+      eventHandlers:
+        - event: RewardClaimed(indexed address,uint256,uint256)
+          handler: handleRewardClaimed
+        - event: RewardDistributionUpdated(uint256)
+          handler: handleRewardDistributionUpdated
+      file: ./src/mapping.ts
+
+  # ─── UMA Optimistic Oracle ─────────────────────────────────────────────────
+  - kind: ethereum
+    name: UmaOptimisticOracle
+    network: bsc
+    source:
+      address: "0x76F4632032d3E16fE15e06DDB60b53C67BCE17a0"
+      abi: UmaOptimisticOracle
+      startBlock: 64817753
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.9
+      language: wasm/assemblyscript
+      entities:
+        - YieldGlobal
+        - OracleRequest
+        - OracleRequestEvent
+        - OracleProposalEvent
+        - OracleSettlementEvent
+      abis:
+        - name: UmaOptimisticOracle
+          file: ./abis/UmaOptimisticOracle.json
+      eventHandlers:
+        - event: RequestPrice(indexed address,indexed bytes32,uint256,bytes,address,uint256,uint256)
+          handler: handleRequestPrice
+        - event: ProposePrice(indexed address,indexed address,indexed bytes32,uint256,bytes,int256,uint256,address)
+          handler: handleProposePrice
+        - event: Settle(indexed address,indexed address,indexed bytes32,uint256,bytes,int256,uint256)
+          handler: handleSettle
+      file: ./src/mapping.ts

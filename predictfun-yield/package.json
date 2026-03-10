@@ -1,0 +1,14 @@
+{
+  "name": "predictfun-yield",
+  "version": "0.1.0",
+  "license": "MIT",
+  "scripts": {
+    "codegen": "graph codegen",
+    "build": "graph build",
+    "deploy": "graph deploy predictfun-yield"
+  },
+  "dependencies": {
+    "@graphprotocol/graph-cli": "0.93.2",
+    "@graphprotocol/graph-ts": "0.35.1"
+  }
+}

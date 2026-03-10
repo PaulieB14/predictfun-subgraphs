@@ -1,0 +1,205 @@
+# Best practices: Bytes IDs, immutable event logs, @derivedFrom, no eth_calls, pruning
+
+# ─── Global Yield Stats ─────────────────────────────────────────────────────
+
+type YieldGlobal @entity {
+  "Singleton: 0x00"
+  id: Bytes!
+  totalYieldClaimed: BigDecimal!
+  totalVTokenMinted: BigDecimal!
+  totalUnderlyingRedeemed: BigDecimal!
+  totalRewardsClaimed: BigDecimal!
+  totalOracleRequests: BigInt!
+  totalOracleSettlements: BigInt!
+  yieldClaimCount: BigInt!
+  rewardClaimCount: BigInt!
+}
+
+# ─── Token Mapping ──────────────────────────────────────────────────────────
+
+type TokenMapping @entity {
+  "ID = underlying address"
+  id: Bytes!
+  underlying: Bytes!
+  vToken: Bytes!
+  enabled: Boolean!
+  totalDeposited: BigDecimal!
+  totalYieldClaimed: BigDecimal!
+  totalVTokenMinted: BigDecimal!
+  totalRedeemed: BigDecimal!
+  lastUpdated: BigInt!
+}
+
+# ─── Reward Round ────────────────────────────────────────────────────────────
+
+type RewardRound @entity {
+  "ID = round number as Bytes"
+  id: Bytes!
+  round: BigInt!
+  totalClaimed: BigDecimal!
+  claimCount: BigInt!
+  updatedAt: BigInt!
+  claims: [RewardClaimEvent!]! @derivedFrom(field: "rewardRound")
+}
+
+# ─── User Yield Account ─────────────────────────────────────────────────────
+
+type YieldAccount @entity {
+  "ID = address bytes"
+  id: Bytes!
+  totalRewardsClaimed: BigDecimal!
+  rewardClaimCount: BigInt!
+  firstSeenAt: BigInt!
+  lastActiveAt: BigInt!
+  rewardClaims: [RewardClaimEvent!]! @derivedFrom(field: "account")
+}
+
+# ─── Oracle Request ──────────────────────────────────────────────────────────
+
+type OracleRequest @entity {
+  "ID = requester + identifier + timestamp bytes"
+  id: Bytes!
+  requester: Bytes!
+  identifier: Bytes!
+  requestTimestamp: BigInt!
+  ancillaryData: Bytes!
+  currency: Bytes!
+  reward: BigDecimal!
+  finalFee: BigDecimal!
+  proposer: Bytes
+  proposedPrice: BigInt
+  expirationTimestamp: BigInt
+  settled: Boolean!
+  settledPrice: BigInt
+  settledPayout: BigDecimal
+  createdAt: BigInt!
+  createdAtBlock: BigInt!
+  settledAt: BigInt
+  proposals: [OracleProposalEvent!]! @derivedFrom(field: "request")
+  settlements: [OracleSettlementEvent!]! @derivedFrom(field: "request")
+}
+
+# ─── Event Logs (immutable, Bytes IDs) ──────────────────────────────────────
+
+type YieldClaimEvent @entity(immutable: true) {
+  "ID = txHash.concatI32(logIndex)"
+  id: Bytes!
+  underlying: Bytes!
+  vToken: Bytes!
+  vTokenAmount: BigDecimal!
+  underlyingAmount: BigDecimal!
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  transactionHash: Bytes!
+}
+
+type VTokenMintEvent @entity(immutable: true) {
+  "ID = txHash.concatI32(logIndex)"
+  id: Bytes!
+  underlying: Bytes!
+  vToken: Bytes!
+  underlyingAmount: BigDecimal!
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  transactionHash: Bytes!
+}
+
+type UnderlyingRedeemedEvent @entity(immutable: true) {
+  "ID = txHash.concatI32(logIndex)"
+  id: Bytes!
+  underlying: Bytes!
+  vToken: Bytes!
+  amountRedeemed: BigDecimal!
+  amountReceived: BigDecimal!
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  transactionHash: Bytes!
+}
+
+type UnderlyingEnabledEvent @entity(immutable: true) {
+  "ID = txHash.concatI32(logIndex)"
+  id: Bytes!
+  underlying: Bytes!
+  amount: BigDecimal!
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  transactionHash: Bytes!
+}
+
+type UnderlyingDisabledEvent @entity(immutable: true) {
+  "ID = txHash.concatI32(logIndex)"
+  id: Bytes!
+  underlying: Bytes!
+  amountRedeemed: BigDecimal!
+  yieldRecipient: Bytes!
+  yieldClaimed: BigDecimal!
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  transactionHash: Bytes!
+}
+
+type RewardClaimEvent @entity(immutable: true) {
+  "ID = txHash.concatI32(logIndex)"
+  id: Bytes!
+  account: YieldAccount!
+  rewardRound: RewardRound!
+  amount: BigDecimal!
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  transactionHash: Bytes!
+}
+
+type RewardDistributionEvent @entity(immutable: true) {
+  "ID = txHash.concatI32(logIndex)"
+  id: Bytes!
+  round: BigInt!
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  transactionHash: Bytes!
+}
+
+type OracleRequestEvent @entity(immutable: true) {
+  "ID = txHash.concatI32(logIndex)"
+  id: Bytes!
+  requester: Bytes!
+  identifier: Bytes!
+  requestTimestamp: BigInt!
+  ancillaryData: Bytes!
+  currency: Bytes!
+  reward: BigDecimal!
+  finalFee: BigDecimal!
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  transactionHash: Bytes!
+}
+
+type OracleProposalEvent @entity(immutable: true) {
+  "ID = txHash.concatI32(logIndex)"
+  id: Bytes!
+  request: OracleRequest!
+  requester: Bytes!
+  proposer: Bytes!
+  identifier: Bytes!
+  requestTimestamp: BigInt!
+  proposedPrice: BigInt!
+  expirationTimestamp: BigInt!
+  currency: Bytes!
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  transactionHash: Bytes!
+}
+
+type OracleSettlementEvent @entity(immutable: true) {
+  "ID = txHash.concatI32(logIndex)"
+  id: Bytes!
+  request: OracleRequest!
+  requester: Bytes!
+  proposer: Bytes!
+  identifier: Bytes!
+  requestTimestamp: BigInt!
+  price: BigInt!
+  payout: BigDecimal!
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  transactionHash: Bytes!
+}

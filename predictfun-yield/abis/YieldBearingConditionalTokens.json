@@ -1,0 +1,72 @@
+[
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "internalType": "address", "name": "underlying", "type": "address" },
+      { "indexed": true, "internalType": "address", "name": "vToken", "type": "address" },
+      { "indexed": false, "internalType": "uint256", "name": "vTokenAmount", "type": "uint256" },
+      { "indexed": false, "internalType": "uint256", "name": "underlyingAmount", "type": "uint256" }
+    ],
+    "name": "YieldClaimed",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "internalType": "address", "name": "underlying", "type": "address" },
+      { "indexed": true, "internalType": "address", "name": "vToken", "type": "address" },
+      { "indexed": false, "internalType": "uint256", "name": "underlyingAmount", "type": "uint256" }
+    ],
+    "name": "VTokenMinted",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "internalType": "address", "name": "underlying", "type": "address" },
+      { "indexed": true, "internalType": "address", "name": "vToken", "type": "address" },
+      { "indexed": false, "internalType": "uint256", "name": "amountRedeemed", "type": "uint256" },
+      { "indexed": false, "internalType": "uint256", "name": "amountReceived", "type": "uint256" }
+    ],
+    "name": "UnderlyingTokenRedeemed",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "internalType": "address", "name": "underlying", "type": "address" },
+      { "indexed": false, "internalType": "uint256", "name": "amount", "type": "uint256" }
+    ],
+    "name": "UnderlyingTokenEnabled",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "internalType": "address", "name": "underlying", "type": "address" },
+      { "indexed": false, "internalType": "uint256", "name": "amountRedeemed", "type": "uint256" },
+      { "indexed": false, "internalType": "address", "name": "yieldRecipient", "type": "address" },
+      { "indexed": false, "internalType": "uint256", "name": "yieldClaimed", "type": "uint256" }
+    ],
+    "name": "UnderlyingTokenDisabled",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": false, "internalType": "address", "name": "underlying", "type": "address" },
+      { "indexed": false, "internalType": "address", "name": "vToken", "type": "address" }
+    ],
+    "name": "UnderlyingTokenConnectedToVToken",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": false, "internalType": "uint256", "name": "originalDepositedAmount", "type": "uint256" },
+      { "indexed": false, "internalType": "uint256", "name": "finalRedeemedBalance", "type": "uint256" }
+    ],
+    "name": "InsufficientUnderlyingTokenBalanceAfterDisable",
+    "type": "event"
+  }
+]
