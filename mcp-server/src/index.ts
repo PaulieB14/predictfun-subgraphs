@@ -4,15 +4,45 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-// ─── Subgraph Endpoints ──────────────────────────────────────────────────────
+// ─── Configuration ───────────────────────────────────────────────────────────
+
+// The Graph Gateway API key (required)
+const API_KEY = process.env.GRAPH_API_KEY;
+if (!API_KEY) {
+  console.error(
+    "Error: GRAPH_API_KEY environment variable is required.\n" +
+    "Get your API key at https://thegraph.com/studio/apikeys/\n" +
+    "See: https://thegraph.com/docs/en/subgraphs/querying/managing-api-keys/"
+  );
+  process.exit(1);
+}
+
+// Subgraph IDs on The Graph Network (required)
+const SUBGRAPH_IDS: Record<string, string> = {
+  orderbook: process.env.PREDICTFUN_ORDERBOOK_ID || "",
+  positions: process.env.PREDICTFUN_POSITIONS_ID || "",
+  yield: process.env.PREDICTFUN_YIELD_ID || "",
+};
+
+const missingIds = Object.entries(SUBGRAPH_IDS)
+  .filter(([, v]) => !v)
+  .map(([k]) => `PREDICTFUN_${k.toUpperCase()}_ID`);
+if (missingIds.length > 0) {
+  console.error(
+    `Error: Missing required environment variables: ${missingIds.join(", ")}\n` +
+    "Set these to the published subgraph IDs from Subgraph Studio."
+  );
+  process.exit(1);
+}
+
+function getEndpoint(subgraph: string): string {
+  return `https://gateway.thegraph.com/api/${API_KEY}/subgraphs/id/${SUBGRAPH_IDS[subgraph]}`;
+}
 
 const ENDPOINTS = {
-  orderbook:
-    "https://api.studio.thegraph.com/query/1717345/predictfun-orderbook/v0.0.2",
-  positions:
-    "https://api.studio.thegraph.com/query/1717345/predictfun-positions/v0.0.1",
-  yield:
-    "https://api.studio.thegraph.com/query/1717345/predictfun-yield/v0.0.1",
+  get orderbook() { return getEndpoint("orderbook"); },
+  get positions() { return getEndpoint("positions"); },
+  get yield() { return getEndpoint("yield"); },
 };
 
 // ─── GraphQL Helper ──────────────────────────────────────────────────────────
@@ -22,9 +52,13 @@ async function query(
   gql: string,
   allowErrors = false
 ): Promise<any> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+
   const res = await fetch(endpoint, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({ query: gql }),
   });
   const json = await res.json();
