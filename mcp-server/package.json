@@ -1,7 +1,29 @@
 {
   "name": "predictfun-mcp",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "MCP server for Predict.fun prediction market data on BNB Chain",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "predict-fun",
+    "prediction-market",
+    "polymarket",
+    "subgraph",
+    "the-graph",
+    "graphql",
+    "bnb-chain",
+    "bsc",
+    "defi",
+    "web3",
+    "ai-agent",
+    "claude",
+    "llm"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PaulieB14/predictfun-subgraphs",
+    "directory": "mcp-server"
+  },
   "license": "MIT",
   "type": "module",
   "bin": {
