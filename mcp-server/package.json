@@ -1,6 +1,6 @@
 {
   "name": "predictfun-mcp",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "MCP server for Predict.fun prediction market data on BNB Chain",
   "keywords": [
     "mcp",

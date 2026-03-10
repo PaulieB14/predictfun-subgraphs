@@ -90,6 +90,69 @@ function marketLabel(id: string, names: Map<string, string>): string {
   return names.get(id) || fmtAddr(id);
 }
 
+// ─── Meta-Tool Constants ────────────────────────────────────────────────────
+
+const PERSONA_THRESHOLDS = {
+  whale_oi_pct: 0.10,          // >10% of market OI
+  whale_low_splits: 50,        // market has < 50 splits
+  arb_min_trades: 100,
+  arb_taker_ratio: 0.70,
+  early_mover_window: 86400,   // 24h in seconds
+  sniper_window: 172800,       // 48h in seconds
+  resolution_fast: 604800,     // 7 days
+  resolution_medium: 2592000,  // 30 days
+  resolution_slow: 7776000,    // 90 days
+  liquidity_deep_tpd: 10,     // trades per day
+  liquidity_thin_tpd: 1,
+  dormant_seconds: 604800,     // 7 days
+  concentrated_top3_pct: 0.50,
+};
+
+function nowUnix(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+function classifyResolutionLatency(
+  createdAt: number,
+  resolvedAt: number | null,
+  resolved: boolean
+): { tag: string; seconds: number | null } {
+  if (resolved && resolvedAt) {
+    const s = resolvedAt - createdAt;
+    const tag =
+      s < PERSONA_THRESHOLDS.resolution_fast ? "fast" :
+      s < PERSONA_THRESHOLDS.resolution_medium ? "medium" :
+      s < PERSONA_THRESHOLDS.resolution_slow ? "slow" : "stale";
+    return { tag, seconds: s };
+  }
+  const age = nowUnix() - createdAt;
+  const tag =
+    age < PERSONA_THRESHOLDS.resolution_fast ? "pending_fast" :
+    age < PERSONA_THRESHOLDS.resolution_medium ? "pending_medium" :
+    age < PERSONA_THRESHOLDS.resolution_slow ? "pending_slow" : "potentially_stale";
+  return { tag, seconds: age };
+}
+
+function classifyLiquidity(
+  tradeCount: number,
+  volume: number,
+  createdAt: number,
+  lastTradeAt: number
+): { tag: string; tradesPerDay: number; volumePerTrade: number; daysSinceLastTrade: number } {
+  const ageInDays = Math.max((nowUnix() - createdAt) / 86400, 1);
+  const tradesPerDay = tradeCount / ageInDays;
+  const volumePerTrade = tradeCount > 0 ? volume / tradeCount : 0;
+  const daysSinceLastTrade = (nowUnix() - lastTradeAt) / 86400;
+
+  let tag: string;
+  if (daysSinceLastTrade > 7) tag = "dormant";
+  else if (tradesPerDay >= PERSONA_THRESHOLDS.liquidity_deep_tpd) tag = "deep";
+  else if (tradesPerDay >= PERSONA_THRESHOLDS.liquidity_thin_tpd) tag = "moderate";
+  else tag = "thin";
+
+  return { tag, tradesPerDay: Math.round(tradesPerDay * 100) / 100, volumePerTrade: Math.round(volumePerTrade * 100) / 100, daysSinceLastTrade: Math.round(daysSinceLastTrade * 10) / 10 };
+}
+
 // ─── MCP Server ──────────────────────────────────────────────────────────────
 
 const server = new McpServer({
@@ -735,6 +798,736 @@ server.tool(
   }
 );
 
+// ─── Meta-Tool: Find Trader Persona ─────────────────────────────────────────
+
+server.tool(
+  "find_trader_persona",
+  "Classify a trader into behavioral archetypes: whale_accumulator, yield_farmer, arbitrageur, early_mover, or resolution_sniper. Returns structured JSON with matched personas and supporting metrics.",
+  {
+    address: z.string().describe("Trader wallet address (0x...)"),
+  },
+  async ({ address }) => {
+    const addr = address.toLowerCase();
+
+    // Parallel queries across all 3 subgraphs
+    const [obData, posData, yldData, positionsData] = await Promise.all([
+      query(
+        ENDPOINTS.orderbook,
+        `{ account(id: "${addr}") { id totalTrades totalVolume totalFees makerTrades takerTrades makerVolume takerVolume firstTradeAt lastTradeAt } }`
+      ),
+      query(
+        ENDPOINTS.positions,
+        `{ account(id: "${addr}") { id splitCount mergeCount redeemCount totalSplitVolume totalMergeVolume totalPayouts firstSeenAt lastActiveAt } }`
+      ),
+      query(
+        ENDPOINTS.yield,
+        `{ yieldAccount(id: "${addr}") { id totalRewardsClaimed rewardClaimCount } }`
+      ),
+      query(
+        ENDPOINTS.positions,
+        `{ userPositions(first: 50, orderBy: netQuantity, orderDirection: desc, where: { user: "${addr}", netQuantity_gt: "0" }) { id netQuantity totalSplit condition { id openInterest resolved splitCount createdAt resolvedAt } } }`
+      ),
+    ]);
+
+    const obAcct = obData?.account;
+    const posAcct = posData?.account;
+    const yldAcct = yldData?.yieldAccount;
+    const positions = positionsData?.userPositions || [];
+
+    if (!obAcct && !posAcct && !yldAcct) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ error: "No activity found", address }) }],
+      };
+    }
+
+    const personas: Array<{
+      persona: string;
+      confidence: string;
+      evidence: Record<string, any>;
+    }> = [];
+
+    // 1. Whale Accumulator: >10% of market OI in low-activity markets
+    for (const p of positions) {
+      const oi = parseFloat(p.condition.openInterest);
+      const net = parseFloat(p.netQuantity);
+      if (oi > 0) {
+        const pctOi = net / oi;
+        const splits = parseInt(p.condition.splitCount);
+        if (pctOi >= PERSONA_THRESHOLDS.whale_oi_pct && splits < PERSONA_THRESHOLDS.whale_low_splits) {
+          personas.push({
+            persona: "whale_accumulator",
+            confidence: pctOi > 0.25 ? "high" : "medium",
+            evidence: {
+              condition_id: p.condition.id,
+              position_size: net,
+              market_oi: oi,
+              pct_of_oi: Math.round(pctOi * 1000) / 10,
+              market_splits: splits,
+            },
+          });
+          break; // One match is enough
+        }
+      }
+    }
+
+    // 2. Yield Farmer: active reward claims
+    if (yldAcct && parseInt(yldAcct.rewardClaimCount) > 2 && parseFloat(yldAcct.totalRewardsClaimed) > 0) {
+      personas.push({
+        persona: "yield_farmer",
+        confidence: parseInt(yldAcct.rewardClaimCount) > 10 ? "high" : "medium",
+        evidence: {
+          total_rewards_claimed: parseFloat(yldAcct.totalRewardsClaimed),
+          claim_count: parseInt(yldAcct.rewardClaimCount),
+        },
+      });
+    }
+
+    // 3. Arbitrageur: high frequency, small avg size, taker-heavy
+    if (obAcct) {
+      const trades = parseInt(obAcct.totalTrades);
+      const volume = parseFloat(obAcct.totalVolume);
+      const takerTrades = parseInt(obAcct.takerTrades);
+      if (trades >= PERSONA_THRESHOLDS.arb_min_trades) {
+        const avgSize = volume / trades;
+        const takerRatio = takerTrades / trades;
+        if (takerRatio >= PERSONA_THRESHOLDS.arb_taker_ratio && avgSize < 500) {
+          personas.push({
+            persona: "arbitrageur",
+            confidence: trades > 500 && takerRatio > 0.85 ? "high" : "medium",
+            evidence: {
+              total_trades: trades,
+              avg_trade_size: Math.round(avgSize * 100) / 100,
+              taker_ratio: Math.round(takerRatio * 1000) / 10,
+              total_volume: volume,
+            },
+          });
+        }
+      }
+    }
+
+    // 4. Early Mover: entered positions within 24h of market creation
+    for (const p of positions) {
+      if (parseFloat(p.totalSplit) > 0) {
+        // Check if there are splits from this user near market creation
+        try {
+          const splitData = await query(
+            ENDPOINTS.positions,
+            `{ splitEvents(first: 1, orderBy: timestamp, orderDirection: asc, where: { stakeholder: "${addr}", condition: "${p.condition.id}" }) { timestamp } }`
+          );
+          const firstSplit = splitData?.splitEvents?.[0];
+          if (firstSplit) {
+            const condCreated = parseInt(p.condition.createdAt);
+            const splitTime = parseInt(firstSplit.timestamp);
+            const delta = splitTime - condCreated;
+            if (delta >= 0 && delta <= PERSONA_THRESHOLDS.early_mover_window) {
+              personas.push({
+                persona: "early_mover",
+                confidence: delta < 3600 ? "high" : "medium",
+                evidence: {
+                  condition_id: p.condition.id,
+                  market_created_at: condCreated,
+                  first_split_at: splitTime,
+                  seconds_after_creation: delta,
+                },
+              });
+              break;
+            }
+          }
+        } catch {
+          // Skip if query fails
+        }
+      }
+    }
+
+    // 5. Resolution Sniper: large splits within 48h before resolution
+    const resolvedPositions = positions.filter((p: any) => p.condition.resolved && p.condition.resolvedAt);
+    for (const p of resolvedPositions.slice(0, 5)) {
+      const resolvedAt = parseInt(p.condition.resolvedAt);
+      const windowStart = resolvedAt - PERSONA_THRESHOLDS.sniper_window;
+      try {
+        const splitData = await query(
+          ENDPOINTS.positions,
+          `{ splitEvents(first: 3, orderBy: amount, orderDirection: desc, where: { stakeholder: "${addr}", condition: "${p.condition.id}", timestamp_gt: "${windowStart}", timestamp_lt: "${resolvedAt}" }) { amount timestamp } }`
+        );
+        if (splitData?.splitEvents?.length > 0) {
+          const totalLateSplits = splitData.splitEvents.reduce(
+            (sum: number, s: any) => sum + parseFloat(s.amount), 0
+          );
+          if (totalLateSplits > 100) {
+            personas.push({
+              persona: "resolution_sniper",
+              confidence: totalLateSplits > 1000 ? "high" : "medium",
+              evidence: {
+                condition_id: p.condition.id,
+                resolved_at: resolvedAt,
+                late_split_volume: Math.round(totalLateSplits * 100) / 100,
+                splits_in_window: splitData.splitEvents.length,
+              },
+            });
+            break;
+          }
+        }
+      } catch {
+        // Skip
+      }
+    }
+
+    const result = {
+      address: addr,
+      personas_matched: personas.length,
+      personas,
+      summary: {
+        total_trades: obAcct ? parseInt(obAcct.totalTrades) : 0,
+        total_volume: obAcct ? parseFloat(obAcct.totalVolume) : 0,
+        active_positions: positions.length,
+        has_yield_activity: !!yldAcct,
+      },
+    };
+
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  }
+);
+
+// ─── Meta-Tool: Scan Trader Personas ────────────────────────────────────────
+
+server.tool(
+  "scan_trader_personas",
+  "Find traders matching a specific behavioral archetype across the platform. Returns structured JSON with matching traders and evidence.",
+  {
+    persona: z
+      .enum(["whale_accumulator", "yield_farmer", "arbitrageur", "early_mover", "resolution_sniper"])
+      .describe("The trader archetype to scan for"),
+    limit: z
+      .number()
+      .min(1)
+      .max(25)
+      .default(10)
+      .describe("Max number of traders to return"),
+  },
+  async ({ persona, limit }) => {
+    const results: Array<{ address: string; evidence: Record<string, any> }> = [];
+
+    switch (persona) {
+      case "whale_accumulator": {
+        const data = await query(
+          ENDPOINTS.positions,
+          `{ userPositions(first: 50, orderBy: netQuantity, orderDirection: desc, where: { netQuantity_gt: "1000" }) { user { id } netQuantity condition { id openInterest splitCount } } }`
+        );
+        for (const p of data?.userPositions || []) {
+          if (results.length >= limit) break;
+          const oi = parseFloat(p.condition.openInterest);
+          const net = parseFloat(p.netQuantity);
+          const splits = parseInt(p.condition.splitCount);
+          if (oi > 0 && net / oi >= PERSONA_THRESHOLDS.whale_oi_pct && splits < PERSONA_THRESHOLDS.whale_low_splits) {
+            results.push({
+              address: p.user.id,
+              evidence: {
+                position_size: net,
+                market_oi: oi,
+                pct_of_oi: Math.round((net / oi) * 1000) / 10,
+                condition_id: p.condition.id,
+                market_splits: splits,
+              },
+            });
+          }
+        }
+        break;
+      }
+
+      case "yield_farmer": {
+        const data = await query(
+          ENDPOINTS.yield,
+          `{ yieldAccounts(first: ${limit}, orderBy: totalRewardsClaimed, orderDirection: desc, where: { rewardClaimCount_gt: "1" }) { id totalRewardsClaimed rewardClaimCount } }`
+        );
+        for (const a of data?.yieldAccounts || []) {
+          results.push({
+            address: a.id,
+            evidence: {
+              total_rewards_claimed: parseFloat(a.totalRewardsClaimed),
+              claim_count: parseInt(a.rewardClaimCount),
+            },
+          });
+        }
+        break;
+      }
+
+      case "arbitrageur": {
+        const data = await query(
+          ENDPOINTS.orderbook,
+          `{ accounts(first: 50, orderBy: totalTrades, orderDirection: desc) { id totalTrades totalVolume takerTrades } }`
+        );
+        for (const a of data?.accounts || []) {
+          if (results.length >= limit) break;
+          const trades = parseInt(a.totalTrades);
+          const volume = parseFloat(a.totalVolume);
+          const takerTrades = parseInt(a.takerTrades);
+          if (trades >= PERSONA_THRESHOLDS.arb_min_trades) {
+            const avgSize = volume / trades;
+            const takerRatio = takerTrades / trades;
+            if (takerRatio >= PERSONA_THRESHOLDS.arb_taker_ratio && avgSize < 500) {
+              results.push({
+                address: a.id,
+                evidence: {
+                  total_trades: trades,
+                  avg_trade_size: Math.round(avgSize * 100) / 100,
+                  taker_ratio: Math.round(takerRatio * 1000) / 10,
+                  total_volume: volume,
+                },
+              });
+            }
+          }
+        }
+        break;
+      }
+
+      case "early_mover": {
+        // Find recently created markets and their first participants
+        const now = nowUnix();
+        const recentCutoff = now - 30 * 86400; // last 30 days
+        const condData = await query(
+          ENDPOINTS.positions,
+          `{ conditions(first: 20, orderBy: createdAt, orderDirection: desc, where: { createdAt_gt: "${recentCutoff}" }) { id createdAt } }`
+        );
+        const seen = new Set<string>();
+        for (const cond of condData?.conditions || []) {
+          if (results.length >= limit) break;
+          const splitData = await query(
+            ENDPOINTS.positions,
+            `{ splitEvents(first: 5, orderBy: timestamp, orderDirection: asc, where: { condition: "${cond.id}", timestamp_lt: "${parseInt(cond.createdAt) + PERSONA_THRESHOLDS.early_mover_window}" }) { stakeholder timestamp amount } }`
+          );
+          for (const s of splitData?.splitEvents || []) {
+            if (results.length >= limit) break;
+            if (seen.has(s.stakeholder)) continue;
+            seen.add(s.stakeholder);
+            results.push({
+              address: s.stakeholder,
+              evidence: {
+                condition_id: cond.id,
+                market_created_at: parseInt(cond.createdAt),
+                split_at: parseInt(s.timestamp),
+                seconds_after_creation: parseInt(s.timestamp) - parseInt(cond.createdAt),
+                amount: parseFloat(s.amount),
+              },
+            });
+          }
+        }
+        break;
+      }
+
+      case "resolution_sniper": {
+        const condData = await query(
+          ENDPOINTS.positions,
+          `{ conditions(first: 20, orderBy: resolvedAt, orderDirection: desc, where: { resolved: true }) { id resolvedAt } }`
+        );
+        const seen = new Set<string>();
+        for (const cond of condData?.conditions || []) {
+          if (results.length >= limit) break;
+          const resolvedAt = parseInt(cond.resolvedAt);
+          const windowStart = resolvedAt - PERSONA_THRESHOLDS.sniper_window;
+          const splitData = await query(
+            ENDPOINTS.positions,
+            `{ splitEvents(first: 10, orderBy: amount, orderDirection: desc, where: { condition: "${cond.id}", timestamp_gt: "${windowStart}", timestamp_lt: "${resolvedAt}" }) { stakeholder amount timestamp } }`
+          );
+          for (const s of splitData?.splitEvents || []) {
+            if (results.length >= limit) break;
+            if (seen.has(s.stakeholder)) continue;
+            seen.add(s.stakeholder);
+            if (parseFloat(s.amount) > 100) {
+              results.push({
+                address: s.stakeholder,
+                evidence: {
+                  condition_id: cond.id,
+                  resolved_at: resolvedAt,
+                  split_amount: parseFloat(s.amount),
+                  seconds_before_resolution: resolvedAt - parseInt(s.timestamp),
+                },
+              });
+            }
+          }
+        }
+        break;
+      }
+    }
+
+    const output = {
+      persona,
+      traders_found: results.length,
+      traders: results,
+    };
+
+    return { content: [{ type: "text", text: JSON.stringify(output, null, 2) }] };
+  }
+);
+
+// ─── Meta-Tool: Tag Market Structure ────────────────────────────────────────
+
+server.tool(
+  "tag_market_structure",
+  "Classify a market by structural features: resolution latency, liquidity profile, oracle type, and tail-risk indicators. Returns structured JSON.",
+  {
+    condition_id: z.string().describe("The conditionId (0x hex string) of the market"),
+  },
+  async ({ condition_id }) => {
+    const id = condition_id.toLowerCase();
+
+    // Parallel queries across subgraphs
+    const [posData, obData, topHolders] = await Promise.all([
+      query(
+        ENDPOINTS.positions,
+        `{ condition(id: "${id}") { id oracle questionId outcomeSlotCount resolved openInterest splitCount mergeCount createdAt resolvedAt source } }`
+      ),
+      query(
+        ENDPOINTS.orderbook,
+        `{ market(id: "${id}") { id volume tradeCount fees createdAt lastTradeAt exchange } }`
+      ),
+      query(
+        ENDPOINTS.positions,
+        `{ userPositions(first: 5, orderBy: netQuantity, orderDirection: desc, where: { condition: "${id}", netQuantity_gt: "0" }) { user { id } netQuantity } }`
+      ),
+    ]);
+
+    const cond = posData?.condition;
+    const market = obData?.market;
+    const holders = topHolders?.userPositions || [];
+
+    if (!cond && !market) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ error: "Market not found", condition_id }) }],
+      };
+    }
+
+    const tags: Record<string, any> = {};
+
+    // 1. Resolution Latency
+    if (cond) {
+      const createdAt = parseInt(cond.createdAt);
+      const resolvedAt = cond.resolvedAt ? parseInt(cond.resolvedAt) : null;
+      const latency = classifyResolutionLatency(createdAt, resolvedAt, cond.resolved);
+      tags.resolution_latency = {
+        tag: latency.tag,
+        resolved: cond.resolved,
+        age_seconds: latency.seconds,
+        age_days: latency.seconds ? Math.round((latency.seconds / 86400) * 10) / 10 : null,
+        created_at: createdAt,
+        resolved_at: resolvedAt,
+      };
+    }
+
+    // 2. Liquidity Profile
+    if (market) {
+      const liquidity = classifyLiquidity(
+        parseInt(market.tradeCount),
+        parseFloat(market.volume),
+        parseInt(market.createdAt),
+        parseInt(market.lastTradeAt)
+      );
+      tags.liquidity_profile = {
+        tag: liquidity.tag,
+        trades_per_day: liquidity.tradesPerDay,
+        volume_per_trade: liquidity.volumePerTrade,
+        days_since_last_trade: liquidity.daysSinceLastTrade,
+        total_trades: parseInt(market.tradeCount),
+        total_volume: parseFloat(market.volume),
+        total_fees: parseFloat(market.fees),
+      };
+    }
+
+    // 3. Oracle Type
+    if (cond) {
+      let oracleTag = "standard";
+      if (cond.source.includes("NegRisk")) {
+        oracleTag = "neg_risk";
+      }
+      // Check if oracle is a UMA oracle by looking for oracle requests
+      try {
+        const oracleData = await query(
+          ENDPOINTS.yield,
+          `{ oracleRequests(first: 1, where: { requester: "${cond.oracle}" }) { id settled } }`
+        );
+        if (oracleData?.oracleRequests?.length > 0) {
+          oracleTag = "uma_oracle";
+        }
+      } catch {
+        // Keep existing tag
+      }
+      tags.oracle_type = {
+        tag: oracleTag,
+        oracle_address: cond.oracle,
+        source: cond.source,
+        outcome_slots: parseInt(cond.outcomeSlotCount),
+      };
+    }
+
+    // 4. Tail-Risk Indicators
+    if (cond) {
+      const oi = parseFloat(cond.openInterest);
+      const volume = market ? parseFloat(market.volume) : 0;
+
+      // OI concentration: top 3 holders share
+      let top3Pct = 0;
+      if (oi > 0 && holders.length > 0) {
+        const top3Sum = holders
+          .slice(0, 3)
+          .reduce((sum: number, h: any) => sum + parseFloat(h.netQuantity), 0);
+        top3Pct = top3Sum / oi;
+      }
+
+      const oiVolumeRatio = volume > 0 ? oi / volume : null;
+      const concentrated = top3Pct >= PERSONA_THRESHOLDS.concentrated_top3_pct;
+
+      tags.tail_risk = {
+        concentrated_oi: concentrated,
+        top_3_holders_pct: Math.round(top3Pct * 1000) / 10,
+        top_holders: holders.slice(0, 3).map((h: any) => ({
+          address: h.user.id,
+          position: parseFloat(h.netQuantity),
+        })),
+        oi_volume_ratio: oiVolumeRatio ? Math.round(oiVolumeRatio * 1000) / 1000 : null,
+        open_interest: oi,
+        flags: [
+          ...(concentrated ? ["concentrated_oi"] : []),
+          ...(oiVolumeRatio && oiVolumeRatio > 1 ? ["illiquid_exit"] : []),
+        ],
+      };
+    }
+
+    const result = {
+      condition_id: id,
+      market_name: (await resolveMarketNames([id])).get(id) || null,
+      tags,
+    };
+
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+  }
+);
+
+// ─── Meta-Tool: Scan Markets by Structure ───────────────────────────────────
+
+server.tool(
+  "scan_markets_by_structure",
+  "Find markets matching structural criteria: resolution speed, liquidity depth, oracle type, or tail-risk flags. Returns structured JSON.",
+  {
+    filter: z
+      .enum([
+        "fast_resolution", "slow_resolution", "stale",
+        "deep_liquidity", "thin_liquidity", "dormant",
+        "uma_oracle", "concentrated_oi", "high_tail_risk",
+      ])
+      .describe("Structural filter to apply"),
+    resolved_only: z
+      .boolean()
+      .default(false)
+      .describe("Only include resolved markets (required for resolution filters)"),
+    limit: z
+      .number()
+      .min(1)
+      .max(25)
+      .default(10)
+      .describe("Number of markets to return"),
+  },
+  async ({ filter, resolved_only, limit }) => {
+    const markets: Array<{ condition_id: string; name: string | null; metrics: Record<string, any> }> = [];
+
+    switch (filter) {
+      case "fast_resolution":
+      case "slow_resolution":
+      case "stale": {
+        const data = await query(
+          ENDPOINTS.positions,
+          `{ conditions(first: 50, orderBy: resolvedAt, orderDirection: desc, where: { resolved: true }) { id createdAt resolvedAt openInterest splitCount source } }`
+        );
+        const targetRange =
+          filter === "fast_resolution" ? [0, PERSONA_THRESHOLDS.resolution_fast] :
+          filter === "slow_resolution" ? [PERSONA_THRESHOLDS.resolution_medium, PERSONA_THRESHOLDS.resolution_slow] :
+          [PERSONA_THRESHOLDS.resolution_slow, Infinity];
+
+        const matched = (data?.conditions || []).filter((c: any) => {
+          const latency = parseInt(c.resolvedAt) - parseInt(c.createdAt);
+          return latency >= targetRange[0] && latency < targetRange[1];
+        });
+
+        const ids = matched.slice(0, limit).map((c: any) => c.id);
+        const names = await resolveMarketNames(ids);
+
+        for (const c of matched.slice(0, limit)) {
+          const latency = parseInt(c.resolvedAt) - parseInt(c.createdAt);
+          markets.push({
+            condition_id: c.id,
+            name: names.get(c.id) || null,
+            metrics: {
+              resolution_days: Math.round((latency / 86400) * 10) / 10,
+              open_interest: parseFloat(c.openInterest),
+              splits: parseInt(c.splitCount),
+              source: c.source,
+            },
+          });
+        }
+        break;
+      }
+
+      case "deep_liquidity":
+      case "thin_liquidity":
+      case "dormant": {
+        const orderBy = filter === "deep_liquidity" ? "tradeCount" : "createdAt";
+        const direction = filter === "deep_liquidity" ? "desc" : "desc";
+        const data = await query(
+          ENDPOINTS.orderbook,
+          `{ markets(first: 50, orderBy: ${orderBy}, orderDirection: ${direction}) { id volume tradeCount fees createdAt lastTradeAt } }`
+        );
+
+        for (const m of data?.markets || []) {
+          if (markets.length >= limit) break;
+          const liq = classifyLiquidity(
+            parseInt(m.tradeCount),
+            parseFloat(m.volume),
+            parseInt(m.createdAt),
+            parseInt(m.lastTradeAt)
+          );
+          if (
+            (filter === "deep_liquidity" && liq.tag === "deep") ||
+            (filter === "thin_liquidity" && liq.tag === "thin") ||
+            (filter === "dormant" && liq.tag === "dormant")
+          ) {
+            markets.push({
+              condition_id: m.id,
+              name: null, // resolved below
+              metrics: {
+                liquidity_tag: liq.tag,
+                trades_per_day: liq.tradesPerDay,
+                volume_per_trade: liq.volumePerTrade,
+                days_since_last_trade: liq.daysSinceLastTrade,
+                total_volume: parseFloat(m.volume),
+                total_trades: parseInt(m.tradeCount),
+              },
+            });
+          }
+        }
+        // Resolve names
+        const ids = markets.map((m) => m.condition_id);
+        const names = await resolveMarketNames(ids);
+        for (const m of markets) {
+          m.name = names.get(m.condition_id) || null;
+        }
+        break;
+      }
+
+      case "uma_oracle": {
+        // Find oracle addresses from yield subgraph, then match to conditions
+        const oracleData = await query(
+          ENDPOINTS.yield,
+          `{ oracleRequests(first: 50, orderBy: createdAt, orderDirection: desc) { id requester settled settledAt } }`
+        );
+        const oracleAddresses = [...new Set((oracleData?.oracleRequests || []).map((o: any) => o.requester))];
+
+        if (oracleAddresses.length > 0) {
+          const oracleFilter = oracleAddresses.slice(0, 10).map((a: any) => `"${a}"`).join(", ");
+          const condData = await query(
+            ENDPOINTS.positions,
+            `{ conditions(first: ${limit}, orderBy: openInterest, orderDirection: desc, where: { oracle_in: [${oracleFilter}]${resolved_only ? ", resolved: true" : ""} }) { id oracle openInterest resolved splitCount createdAt resolvedAt } }`
+          );
+          const ids = (condData?.conditions || []).map((c: any) => c.id);
+          const names = await resolveMarketNames(ids);
+          for (const c of condData?.conditions || []) {
+            markets.push({
+              condition_id: c.id,
+              name: names.get(c.id) || null,
+              metrics: {
+                oracle_address: c.oracle,
+                open_interest: parseFloat(c.openInterest),
+                resolved: c.resolved,
+                splits: parseInt(c.splitCount),
+              },
+            });
+          }
+        }
+        break;
+      }
+
+      case "concentrated_oi":
+      case "high_tail_risk": {
+        const condData = await query(
+          ENDPOINTS.positions,
+          `{ conditions(first: 30, orderBy: openInterest, orderDirection: desc, where: { openInterest_gt: "100"${resolved_only ? ", resolved: true" : ""} }) { id openInterest splitCount source } }`
+        );
+
+        for (const cond of condData?.conditions || []) {
+          if (markets.length >= limit) break;
+          const oi = parseFloat(cond.openInterest);
+          const holdersData = await query(
+            ENDPOINTS.positions,
+            `{ userPositions(first: 3, orderBy: netQuantity, orderDirection: desc, where: { condition: "${cond.id}", netQuantity_gt: "0" }) { user { id } netQuantity } }`
+          );
+          const holders = holdersData?.userPositions || [];
+          const top3Sum = holders.reduce((sum: number, h: any) => sum + parseFloat(h.netQuantity), 0);
+          const top3Pct = oi > 0 ? top3Sum / oi : 0;
+          const isConcentrated = top3Pct >= PERSONA_THRESHOLDS.concentrated_top3_pct;
+
+          if (filter === "concentrated_oi" && isConcentrated) {
+            markets.push({
+              condition_id: cond.id,
+              name: null,
+              metrics: {
+                top_3_holders_pct: Math.round(top3Pct * 1000) / 10,
+                open_interest: oi,
+                top_holders: holders.map((h: any) => ({
+                  address: h.user.id,
+                  position: parseFloat(h.netQuantity),
+                })),
+              },
+            });
+          } else if (filter === "high_tail_risk") {
+            // Check both concentration and OI/volume ratio
+            let obMarket: any = null;
+            try {
+              const obData = await query(
+                ENDPOINTS.orderbook,
+                `{ market(id: "${cond.id}") { volume } }`
+              );
+              obMarket = obData?.market;
+            } catch { /* skip */ }
+            const volume = obMarket ? parseFloat(obMarket.volume) : 0;
+            const oiVolumeRatio = volume > 0 ? oi / volume : 999;
+            if (isConcentrated || oiVolumeRatio > 1) {
+              markets.push({
+                condition_id: cond.id,
+                name: null,
+                metrics: {
+                  top_3_holders_pct: Math.round(top3Pct * 1000) / 10,
+                  oi_volume_ratio: Math.round(oiVolumeRatio * 1000) / 1000,
+                  open_interest: oi,
+                  volume,
+                  risk_flags: [
+                    ...(isConcentrated ? ["concentrated_oi"] : []),
+                    ...(oiVolumeRatio > 1 ? ["illiquid_exit"] : []),
+                  ],
+                },
+              });
+            }
+          }
+        }
+        // Resolve names
+        const allIds = markets.map((m) => m.condition_id);
+        if (allIds.length > 0) {
+          const names = await resolveMarketNames(allIds);
+          for (const m of markets) {
+            m.name = names.get(m.condition_id) || null;
+          }
+        }
+        break;
+      }
+    }
+
+    const output = {
+      filter,
+      resolved_only,
+      markets_found: markets.length,
+      markets,
+    };
+
+    return { content: [{ type: "text", text: JSON.stringify(output, null, 2) }] };
+  }
+);
+
 // ─── Prompts ─────────────────────────────────────────────────────────────────
 
 server.prompt(
@@ -872,6 +1665,50 @@ server.prompt(
 \`\`\`
 
 Run any of these with the query_subgraph tool, specifying the subgraph name and the query.`,
+        },
+      },
+    ],
+  })
+);
+
+server.prompt(
+  "trader_persona_analysis",
+  "Classify traders by behavioral archetypes and find similar traders",
+  { address: z.string().optional().describe("Optional: specific trader address to classify") },
+  ({ address }) => ({
+    messages: [
+      {
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: address
+            ? `Classify trader ${address} into behavioral archetypes on Predict.fun. Use find_trader_persona to detect if they match: whale_accumulator, yield_farmer, arbitrageur, early_mover, or resolution_sniper. Then use get_trader_profile for their full trading history. Based on their persona, use scan_trader_personas to find similar traders. Summarize their strategy and how they compare to others.`
+            : `Scan the Predict.fun platform for interesting trader archetypes. Use scan_trader_personas for each persona type: whale_accumulator, yield_farmer, arbitrageur, early_mover, and resolution_sniper. Compare the results — which personas are most common? Are there traders who appear in multiple categories? Use get_trader_profile on the most interesting ones to build a full picture.`,
+        },
+      },
+    ],
+  })
+);
+
+server.prompt(
+  "market_quality_scan",
+  "Scan markets by structural quality indicators to find opportunities or risks",
+  {},
+  () => ({
+    messages: [
+      {
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: `Perform a structural quality scan of Predict.fun markets. Run these scans in sequence:
+
+1. Use scan_markets_by_structure with filter "deep_liquidity" to find the most actively traded markets.
+2. Use scan_markets_by_structure with filter "concentrated_oi" to find markets where a few whales dominate.
+3. Use scan_markets_by_structure with filter "high_tail_risk" to identify markets with exit liquidity concerns.
+4. Use scan_markets_by_structure with filter "dormant" to find markets that may be abandoned.
+5. Use scan_markets_by_structure with filter "fast_resolution" to see which markets resolved quickly.
+
+For the most interesting markets from each scan, use tag_market_structure to get the full structural breakdown. Summarize: Which markets are highest quality (deep liquidity, distributed OI, active trading)? Which are risky (concentrated, illiquid, stale)?`,
         },
       },
     ],
