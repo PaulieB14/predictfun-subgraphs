@@ -8,15 +8,15 @@ A suite of three subgraphs indexing [Predict.fun](https://predict.fun) — a pre
 
 Indexes orderbook activity across all CTF and NegRisk exchanges.
 
-**Entities:** Markets, Orderbooks, OrderFilled/Matched/Cancelled events, Fee tracking, TradeData timeseries with hourly/daily aggregations
+**Entities:** Markets, Orderbooks, OrderFilled/Matched/Cancelled events, Fee tracking, Account stats, NegRisk markets, TradeData timeseries with hourly/daily aggregations
 
 **Contracts:**
 | Contract | Address |
 |---|---|
-| CTFExchange (Non-Yield) | `0x8B4b3a245d76e28B614Dc7f4D3129C5755004950` |
-| CTFExchange (Yield) | `0x73046A1e0613b9eE4f794fA52D8d8C02A539A42d` |
-| NegRiskCtfExchange (Non-Yield) | `0x0497E4c401D39aAEBBfB6d714D30D6A7E2992Ae6` |
-| NegRiskCtfExchange (Yield) | `0x2Cd1338090C37AdFC01Af0e2E9a73fa0a40f6E2D` |
+| CTFExchange (Non-Yield) | `0x8BC070BEdAB741406F4B1Eb65A72bee27894B689` |
+| CTFExchange (Yield) | `0x6bEb5a40C032AFc305961162d8204CDA16DECFa5` |
+| NegRiskCtfExchange (Non-Yield) | `0x365fb81bd4A24D6303cd2F19c349dE6894D8d58A` |
+| NegRiskCtfExchange (Yield) | `0x8A289d458f5a134bA40015085A8F50Ffb681B41d` |
 | NegRiskAdapter (Non-Yield) | `0xc3Cf7c252f65E0d8D88537dF96569AE94a7F1A6E` |
 | NegRiskAdapter (Yield) | `0x41dCe1A4B8FB5e6327701750aF6231B7CD0B2A40` |
 | + 4 Fee Module contracts | |

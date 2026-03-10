@@ -56,7 +56,12 @@ function toDecimal(amount: BigInt): BigDecimal {
 }
 
 function tokenIdToBytes(tokenId: BigInt): Bytes {
-  return Bytes.fromHexString(tokenId.toHexString());
+  let hex = tokenId.toHexString();
+  // Bytes.fromHexString requires even-length hex — pad if odd
+  if ((hex.length % 2) != 0) {
+    hex = "0x0" + hex.slice(2);
+  }
+  return Bytes.fromHexString(hex);
 }
 
 function exchangeLabel(address: Bytes): string {

@@ -47,22 +47,14 @@ const ENDPOINTS = {
 
 // ─── GraphQL Helper ──────────────────────────────────────────────────────────
 
-async function query(
-  endpoint: string,
-  gql: string,
-  allowErrors = false
-): Promise<any> {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-
+async function query(endpoint: string, gql: string): Promise<any> {
   const res = await fetch(endpoint, {
     method: "POST",
-    headers,
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query: gql }),
   });
   const json = await res.json();
-  if (json.errors && !allowErrors && !json.data) {
+  if (json.errors && !json.data) {
     throw new Error(json.errors.map((e: any) => e.message).join("; "));
   }
   return json.data;
@@ -102,8 +94,7 @@ server.tool(
     const [ob, pos, yld] = await Promise.all([
       query(
         ENDPOINTS.orderbook,
-        `{ globals(subgraphError: allow) { totalTrades totalVolume totalFees uniqueTraders activeMarkets tradingPaused } _meta { block { number } hasIndexingErrors } }`,
-        true
+        `{ globals { totalTrades totalVolume totalFees uniqueTraders activeMarkets tradingPaused } _meta { block { number } hasIndexingErrors } }`
       ),
       query(
         ENDPOINTS.positions,
@@ -195,8 +186,7 @@ server.tool(
       const orderBy = rank_by === "trades" ? "tradeCount" : "volume";
       const data = await query(
         ENDPOINTS.orderbook,
-        `{ markets(first: ${limit}, orderBy: ${orderBy}, orderDirection: desc, subgraphError: allow) { id volume tradeCount fees exchange } }`,
-        true
+        `{ markets(first: ${limit}, orderBy: ${orderBy}, orderDirection: desc) { id volume tradeCount fees exchange } }`
       );
       const label = rank_by === "trades" ? "Trade Count" : "Volume";
       lines.push(`# Top ${limit} Markets by ${label}\n`);
@@ -233,8 +223,7 @@ server.tool(
       ),
       query(
         ENDPOINTS.orderbook,
-        `{ market(id: "${id}", subgraphError: allow) { id volume tradeCount fees exchange createdAt lastTradeAt } }`,
-        true
+        `{ market(id: "${id}") { id volume tradeCount fees exchange createdAt lastTradeAt } }`
       ),
     ]);
 
@@ -309,8 +298,7 @@ server.tool(
     const [obData, posData, yldData] = await Promise.all([
       query(
         ENDPOINTS.orderbook,
-        `{ account(id: "${addr}", subgraphError: allow) { id totalTrades totalVolume totalFees makerTrades takerTrades makerVolume takerVolume firstTradeAt lastTradeAt } }`,
-        true
+        `{ account(id: "${addr}") { id totalTrades totalVolume totalFees makerTrades takerTrades makerVolume takerVolume firstTradeAt lastTradeAt } }`
       ),
       query(
         ENDPOINTS.positions,
@@ -404,8 +392,7 @@ server.tool(
       case "trades": {
         const data = await query(
           ENDPOINTS.orderbook,
-          `{ orderFilledEvents(first: ${limit}, orderBy: timestamp, orderDirection: desc, subgraphError: allow) { id maker { id } taker { id } makerAmountFilled takerAmountFilled fee price side exchange timestamp transactionHash } }`,
-          true
+          `{ orderFilledEvents(first: ${limit}, orderBy: timestamp, orderDirection: desc) { id maker { id } taker { id } makerAmountFilled takerAmountFilled fee price side exchange timestamp transactionHash } }`
         );
         lines.push(`# Recent ${limit} Trades\n`);
         lines.push("| Time | Side | Price | Maker Amt | Taker Amt | Fee | Exchange |");
@@ -636,8 +623,7 @@ server.tool(
       const orderBy = rank_by === "trades" ? "totalTrades" : "totalVolume";
       const data = await query(
         ENDPOINTS.orderbook,
-        `{ accounts(first: ${limit}, orderBy: ${orderBy}, orderDirection: desc, subgraphError: allow) { id totalTrades totalVolume totalFees makerTrades takerTrades } }`,
-        true
+        `{ accounts(first: ${limit}, orderBy: ${orderBy}, orderDirection: desc) { id totalTrades totalVolume totalFees makerTrades takerTrades } }`
       );
       const label = rank_by === "trades" ? "Trades" : "Volume";
       lines.push(`# Top ${limit} Traders by ${label}\n`);
@@ -707,8 +693,7 @@ server.tool(
   },
   async ({ subgraph, graphql_query }) => {
     const endpoint = ENDPOINTS[subgraph];
-    const allowErrors = subgraph === "orderbook";
-    const data = await query(endpoint, graphql_query, allowErrors);
+    const data = await query(endpoint, graphql_query);
     return {
       content: [
         { type: "text", text: JSON.stringify(data, null, 2) },
@@ -830,7 +815,7 @@ server.prompt(
 
 **Orderbook** — Recent large trades (>$1000):
 \`\`\`graphql
-{ orderFilledEvents(first: 10, orderBy: timestamp, orderDirection: desc, where: { makerAmountFilled_gt: "1000" }, subgraphError: allow) { maker { id } taker { id } makerAmountFilled price side exchange timestamp } }
+{ orderFilledEvents(first: 10, orderBy: timestamp, orderDirection: desc, where: { makerAmountFilled_gt: "1000" }) { maker { id } taker { id } makerAmountFilled price side exchange timestamp } }
 \`\`\`
 
 **Positions** — All positions for a specific market:
