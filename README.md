@@ -84,32 +84,22 @@ An MCP (Model Context Protocol) server that gives AI agents structured access to
 
 1. Get a Graph API key from [Subgraph Studio](https://thegraph.com/studio/) ([docs](https://thegraph.com/docs/en/subgraphs/querying/managing-api-keys/))
 
-2. Install and build:
-```bash
-cd mcp-server
-npm install
-npm run build
-```
-
-3. Add to your Claude Code config (`~/.claude/settings.json`):
+2. Add to your Claude Code config (`~/.claude/settings.json`):
 ```json
 {
   "mcpServers": {
     "predictfun": {
-      "command": "node",
-      "args": ["/path/to/predictfun-subgraphs/mcp-server/dist/index.js"],
+      "command": "npx",
+      "args": ["predictfun-mcp"],
       "env": {
-        "GRAPH_API_KEY": "your-api-key-here",
-        "PREDICTFUN_ORDERBOOK_ID": "your-orderbook-subgraph-id",
-        "PREDICTFUN_POSITIONS_ID": "your-positions-subgraph-id",
-        "PREDICTFUN_YIELD_ID": "your-yield-subgraph-id"
+        "GRAPH_API_KEY": "your-api-key-here"
       }
     }
   }
 }
 ```
 
-All environment variables are **required**. The server will exit with an error if any are missing.
+Subgraph IDs are built in. Queries go through [The Graph Gateway](https://thegraph.com/docs/en/querying/graphql-api/) and are billed to your API key.
 
 ### Tools (10)
 

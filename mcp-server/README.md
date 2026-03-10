@@ -6,7 +6,7 @@ Indexes data from three subgraphs: orderbook activity, position lifecycle, and y
 
 ## Setup
 
-1. Get a Graph API key from [Subgraph Studio](https://thegraph.com/studio/)
+1. Get a Graph API key from [Subgraph Studio](https://thegraph.com/studio/) ([docs](https://thegraph.com/docs/en/subgraphs/querying/managing-api-keys/))
 
 2. Add to your Claude Code config (`~/.claude/settings.json`):
 ```json
@@ -16,17 +16,14 @@ Indexes data from three subgraphs: orderbook activity, position lifecycle, and y
       "command": "npx",
       "args": ["predictfun-mcp"],
       "env": {
-        "GRAPH_API_KEY": "your-api-key-here",
-        "PREDICTFUN_ORDERBOOK_ID": "your-orderbook-subgraph-id",
-        "PREDICTFUN_POSITIONS_ID": "your-positions-subgraph-id",
-        "PREDICTFUN_YIELD_ID": "your-yield-subgraph-id"
+        "GRAPH_API_KEY": "your-api-key-here"
       }
     }
   }
 }
 ```
 
-All environment variables are **required**.
+That's it — subgraph IDs are built in. Queries go through [The Graph Gateway](https://thegraph.com/docs/en/querying/graphql-api/) and are billed to your API key.
 
 ## Tools (10)
 

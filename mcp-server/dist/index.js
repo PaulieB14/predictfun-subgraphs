@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 // ─── Configuration ───────────────────────────────────────────────────────────
-// The Graph Gateway API key (required)
+// The Graph Gateway API key (required — pay per query)
 const API_KEY = process.env.GRAPH_API_KEY;
 if (!API_KEY) {
     console.error("Error: GRAPH_API_KEY environment variable is required.\n" +
@@ -11,27 +11,16 @@ if (!API_KEY) {
         "See: https://thegraph.com/docs/en/subgraphs/querying/managing-api-keys/");
     process.exit(1);
 }
-// Subgraph IDs on The Graph Network (required)
+// Published subgraph IDs on The Graph Network
 const SUBGRAPH_IDS = {
-    orderbook: process.env.PREDICTFUN_ORDERBOOK_ID || "",
-    positions: process.env.PREDICTFUN_POSITIONS_ID || "",
-    yield: process.env.PREDICTFUN_YIELD_ID || "",
+    orderbook: "89T2Z1tzwRB7obJZ8Mpo8N6eiBnsG1hM69VCMkfccEAZ",
+    positions: "CC7fzcAvcDr1Wt2SGJzj8aYsVYbN5sr7v42ysiqLPzhd",
+    yield: "96B2b2LtkgcurXTEnrSAUN5jr4T1BrfV3s5sPXNdnER8",
 };
-const missingIds = Object.entries(SUBGRAPH_IDS)
-    .filter(([, v]) => !v)
-    .map(([k]) => `PREDICTFUN_${k.toUpperCase()}_ID`);
-if (missingIds.length > 0) {
-    console.error(`Error: Missing required environment variables: ${missingIds.join(", ")}\n` +
-        "Set these to the published subgraph IDs from Subgraph Studio.");
-    process.exit(1);
-}
-function getEndpoint(subgraph) {
-    return `https://gateway.thegraph.com/api/${API_KEY}/subgraphs/id/${SUBGRAPH_IDS[subgraph]}`;
-}
 const ENDPOINTS = {
-    get orderbook() { return getEndpoint("orderbook"); },
-    get positions() { return getEndpoint("positions"); },
-    get yield() { return getEndpoint("yield"); },
+    orderbook: `https://gateway.thegraph.com/api/${API_KEY}/subgraphs/id/${SUBGRAPH_IDS.orderbook}`,
+    positions: `https://gateway.thegraph.com/api/${API_KEY}/subgraphs/id/${SUBGRAPH_IDS.positions}`,
+    yield: `https://gateway.thegraph.com/api/${API_KEY}/subgraphs/id/${SUBGRAPH_IDS.yield}`,
 };
 // ─── GraphQL Helper ──────────────────────────────────────────────────────────
 async function query(endpoint, gql) {
