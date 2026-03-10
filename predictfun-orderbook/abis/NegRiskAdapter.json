@@ -1,0 +1,24 @@
+[
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "internalType": "bytes32", "name": "marketId", "type": "bytes32" },
+      { "indexed": true, "internalType": "address", "name": "oracle", "type": "address" },
+      { "indexed": false, "internalType": "uint256", "name": "feeBips", "type": "uint256" },
+      { "indexed": false, "internalType": "bytes", "name": "data", "type": "bytes" }
+    ],
+    "name": "MarketPrepared",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "internalType": "bytes32", "name": "marketId", "type": "bytes32" },
+      { "indexed": true, "internalType": "bytes32", "name": "questionId", "type": "bytes32" },
+      { "indexed": false, "internalType": "uint256", "name": "index", "type": "uint256" },
+      { "indexed": false, "internalType": "bytes", "name": "data", "type": "bytes" }
+    ],
+    "name": "QuestionPrepared",
+    "type": "event"
+  }
+]

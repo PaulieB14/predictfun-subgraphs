@@ -1,0 +1,221 @@
+# specVersion 1.3.0 — uses timeseries, aggregations, immutable entities, Bytes IDs
+#
+# Best practices applied:
+# 1. indexerHints: prune: auto (in manifest)
+# 2. @derivedFrom for all reverse lookups
+# 3. @entity(immutable: true) + Bytes! IDs on event logs
+# 4. No eth_calls — pure event-driven
+# 5. Timeseries + Aggregations for volume/trade analytics
+# 6. Grafting-ready (manifest supports graft block)
+
+# ─── Global Aggregates ────────────────────────────────────────────────────────
+
+type Global @entity {
+  "Singleton: 0x00"
+  id: Bytes!
+  totalTrades: BigInt!
+  totalVolume: BigDecimal!
+  totalFees: BigDecimal!
+  uniqueTraders: BigInt!
+  activeMarkets: BigInt!
+  tradingPaused: Boolean!
+}
+
+# ─── Market & Token Registration ──────────────────────────────────────────────
+
+type Market @entity {
+  "ID = conditionId bytes"
+  id: Bytes!
+  token0: BigInt!
+  token1: BigInt!
+  exchange: String!
+  createdAt: BigInt!
+  createdAtBlock: BigInt!
+  createdAtTransaction: Bytes!
+  volume: BigDecimal!
+  tradeCount: BigInt!
+  fees: BigDecimal!
+  lastTradeAt: BigInt!
+  orderbooks: [Orderbook!]! @derivedFrom(field: "market")
+}
+
+type NegRiskMarket @entity {
+  "ID = marketId bytes"
+  id: Bytes!
+  oracle: Bytes!
+  feeBips: BigInt!
+  data: Bytes!
+  questionCount: BigInt!
+  createdAt: BigInt!
+  createdAtBlock: BigInt!
+  questions: [NegRiskQuestion!]! @derivedFrom(field: "market")
+}
+
+type NegRiskQuestion @entity(immutable: true) {
+  "ID = questionId bytes"
+  id: Bytes!
+  market: NegRiskMarket!
+  index: BigInt!
+  data: Bytes!
+  createdAt: BigInt!
+}
+
+# ─── Orderbook (per-token aggregated stats) ───────────────────────────────────
+
+type Orderbook @entity {
+  "ID = tokenId as Bytes (left-padded)"
+  id: Bytes!
+  tokenId: BigInt!
+  market: Market
+  buys: BigInt!
+  sells: BigInt!
+  buyVolume: BigDecimal!
+  sellVolume: BigDecimal!
+  fees: BigDecimal!
+  lastTradePrice: BigDecimal!
+  lastTradeAt: BigInt!
+  orders: [OrderFilledEvent!]! @derivedFrom(field: "orderbook")
+}
+
+# ─── Trade Events (immutable logs, Bytes IDs) ────────────────────────────────
+
+type OrderFilledEvent @entity(immutable: true) {
+  "ID = txHash.concatI32(logIndex)"
+  id: Bytes!
+  orderHash: Bytes!
+  maker: Account!
+  taker: Account!
+  makerAssetId: BigInt!
+  takerAssetId: BigInt!
+  makerAmountFilled: BigDecimal!
+  takerAmountFilled: BigDecimal!
+  fee: BigDecimal!
+  price: BigDecimal!
+  side: String!
+  exchange: String!
+  orderbook: Orderbook!
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  transactionHash: Bytes!
+}
+
+type OrdersMatchedEvent @entity(immutable: true) {
+  "ID = txHash.concatI32(logIndex)"
+  id: Bytes!
+  takerOrderHash: Bytes!
+  takerOrderMaker: Bytes!
+  makerAssetId: BigInt!
+  takerAssetId: BigInt!
+  makerAmountFilled: BigDecimal!
+  takerAmountFilled: BigDecimal!
+  exchange: String!
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  transactionHash: Bytes!
+}
+
+type OrderCancelledEvent @entity(immutable: true) {
+  "ID = txHash.concatI32(logIndex)"
+  id: Bytes!
+  orderHash: Bytes!
+  exchange: String!
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  transactionHash: Bytes!
+}
+
+# ─── Fee Events ──────────────────────────────────────────────────────────────
+
+type FeeChargedEvent @entity(immutable: true) {
+  "ID = txHash.concatI32(logIndex)"
+  id: Bytes!
+  receiver: Bytes!
+  tokenId: BigInt!
+  amount: BigDecimal!
+  exchange: String!
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  transactionHash: Bytes!
+}
+
+type FeeRefundedEvent @entity(immutable: true) {
+  "ID = txHash.concatI32(logIndex)"
+  id: Bytes!
+  token: Bytes!
+  to: Bytes!
+  tokenId: BigInt!
+  amount: BigDecimal!
+  module: String!
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  transactionHash: Bytes!
+}
+
+type FeeWithdrawnEvent @entity(immutable: true) {
+  "ID = txHash.concatI32(logIndex)"
+  id: Bytes!
+  token: Bytes!
+  to: Bytes!
+  tokenId: BigInt!
+  amount: BigDecimal!
+  module: String!
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  transactionHash: Bytes!
+}
+
+# ─── Account (per-trader aggregated stats) ────────────────────────────────────
+
+type Account @entity {
+  "ID = address bytes"
+  id: Bytes!
+  totalTrades: BigInt!
+  totalVolume: BigDecimal!
+  totalFees: BigDecimal!
+  makerTrades: BigInt!
+  takerTrades: BigInt!
+  makerVolume: BigDecimal!
+  takerVolume: BigDecimal!
+  firstTradeAt: BigInt!
+  lastTradeAt: BigInt!
+  makerOrders: [OrderFilledEvent!]! @derivedFrom(field: "maker")
+  takerOrders: [OrderFilledEvent!]! @derivedFrom(field: "taker")
+}
+
+# ─── Trading Pause Events ────────────────────────────────────────────────────
+
+type TradingPauseEvent @entity(immutable: true) {
+  "ID = txHash.concatI32(logIndex)"
+  id: Bytes!
+  pauser: Bytes!
+  paused: Boolean!
+  exchange: String!
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  transactionHash: Bytes!
+}
+
+# ─── Timeseries: Raw Trade Data Points ───────────────────────────────────────
+
+type TradeData @entity(timeseries: true) {
+  id: Int8!
+  timestamp: Timestamp!
+  volume: BigDecimal!
+  fee: BigDecimal!
+  price: BigDecimal!
+  tokenId: BigInt!
+  exchange: String!
+}
+
+# ─── Aggregations: Hourly & Daily Stats ──────────────────────────────────────
+
+type TradeStats @aggregation(intervals: ["hour", "day"], source: "TradeData") {
+  id: Int8!
+  timestamp: Timestamp!
+  totalVolume: BigDecimal! @aggregate(fn: "sum", arg: "volume")
+  totalFees: BigDecimal! @aggregate(fn: "sum", arg: "fee")
+  tradeCount: Int8! @aggregate(fn: "count", cumulative: false)
+  maxPrice: BigDecimal! @aggregate(fn: "max", arg: "price")
+  minPrice: BigDecimal! @aggregate(fn: "min", arg: "price")
+  lastPrice: BigDecimal! @aggregate(fn: "last", arg: "price")
+}
