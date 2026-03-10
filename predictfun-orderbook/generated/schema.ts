@@ -393,6 +393,40 @@ export class NegRiskMarket extends Entity {
     this.set("data", Value.fromBytes(value));
   }
 
+  get title(): string | null {
+    let value = this.get("title");
+    if (!value || value.kind == ValueKind.NULL) {
+      return null;
+    } else {
+      return value.toString();
+    }
+  }
+
+  set title(value: string | null) {
+    if (!value) {
+      this.unset("title");
+    } else {
+      this.set("title", Value.fromString(<string>value));
+    }
+  }
+
+  get description(): string | null {
+    let value = this.get("description");
+    if (!value || value.kind == ValueKind.NULL) {
+      return null;
+    } else {
+      return value.toString();
+    }
+  }
+
+  set description(value: string | null) {
+    if (!value) {
+      this.unset("description");
+    } else {
+      this.set("description", Value.fromString(<string>value));
+    }
+  }
+
   get questionCount(): BigInt {
     let value = this.get("questionCount");
     if (!value || value.kind == ValueKind.NULL) {
@@ -521,6 +555,40 @@ export class NegRiskQuestion extends Entity {
 
   set data(value: Bytes) {
     this.set("data", Value.fromBytes(value));
+  }
+
+  get question(): string | null {
+    let value = this.get("question");
+    if (!value || value.kind == ValueKind.NULL) {
+      return null;
+    } else {
+      return value.toString();
+    }
+  }
+
+  set question(value: string | null) {
+    if (!value) {
+      this.unset("question");
+    } else {
+      this.set("question", Value.fromString(<string>value));
+    }
+  }
+
+  get description(): string | null {
+    let value = this.get("description");
+    if (!value || value.kind == ValueKind.NULL) {
+      return null;
+    } else {
+      return value.toString();
+    }
+  }
+
+  set description(value: string | null) {
+    if (!value) {
+      this.unset("description");
+    } else {
+      this.set("description", Value.fromString(<string>value));
+    }
   }
 
   get createdAt(): BigInt {

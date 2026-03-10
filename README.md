@@ -1,6 +1,10 @@
 # Predict.fun Subgraphs
 
-A suite of three subgraphs indexing [Predict.fun](https://predict.fun) — a prediction market protocol on BNB Chain (Polymarket fork) with $1.5B+ volume and novel yield-bearing mechanics via Venus Protocol.
+<a href="https://glama.ai/mcp/servers/PaulieB14/predictfun-mcp">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/PaulieB14/predictfun-mcp/badge" />
+</a>
+
+A suite of three subgraphs indexing [Predict.fun](https://predict.fun) — a prediction market protocol on BNB Chain (Polymarket fork) with $1.7B+ volume and novel yield-bearing mechanics via Venus Protocol.
 
 ## Subgraphs
 

@@ -45,6 +45,8 @@ type NegRiskMarket @entity {
   oracle: Bytes!
   feeBips: BigInt!
   data: Bytes!
+  title: String
+  description: String
   questionCount: BigInt!
   createdAt: BigInt!
   createdAtBlock: BigInt!
@@ -57,6 +59,8 @@ type NegRiskQuestion @entity(immutable: true) {
   market: NegRiskMarket!
   index: BigInt!
   data: Bytes!
+  question: String
+  description: String
   createdAt: BigInt!
 }
 
