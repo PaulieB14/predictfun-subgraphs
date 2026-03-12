@@ -40,12 +40,49 @@ Add to your MCP config (`~/.claude/settings.json` or Claude Desktop settings):
 }
 ```
 
+### OpenClaw / Remote Agents (SSE)
+
+Start the server with the HTTP transport:
+
+```bash
+# Dual transport — stdio + SSE on port 3850
+npx predictfun-mcp --http
+
+# SSE only (for remote/server deployments)
+npx predictfun-mcp --http-only
+
+# Custom port
+MCP_HTTP_PORT=4000 npx predictfun-mcp --http
+```
+
+Then point your agent at the SSE endpoint:
+
+```json
+{
+  "mcpServers": {
+    "predictfun": {
+      "url": "http://localhost:3850/sse"
+    }
+  }
+}
+```
+
 ### Docker
 
 ```bash
 docker build -t predictfun-mcp .
 docker run -e GRAPH_API_KEY=your-key-here predictfun-mcp
 ```
+
+### Transport Modes
+
+| Invocation | Transports | Use case |
+|---|---|---|
+| `npx predictfun-mcp` | stdio | Claude Desktop, Cursor, Claude Code |
+| `npx predictfun-mcp --http` | stdio + SSE :3850 | Dual — local + remote agents |
+| `npx predictfun-mcp --http-only` | SSE :3850 | OpenClaw, remote deployments |
+
+A `/health` endpoint is available at `http://localhost:3850/health` when HTTP transport is active.
 
 ## Requirements
 
