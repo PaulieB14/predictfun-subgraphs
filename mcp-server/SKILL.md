@@ -19,11 +19,24 @@ Structured access to Predict.fun prediction market data on BNB Chain — platfor
 - **tag_market_structure** — Tag a market by resolution latency, liquidity, oracle type, tail risk
 - **scan_markets_by_structure** — Find markets by structural filter
 
+## Requirements
+
+- **Runtime:** Node.js >= 18 (runs via `npx`)
+- **Environment variables:**
+  - `GRAPH_API_KEY` (required) — Free API key from [The Graph Studio](https://thegraph.com/studio/). Used to query three Predict.fun subgraphs via The Graph Gateway. Queries are billed to your key (free tier: 100K queries/month).
+
 ## Install
 
 ```bash
-npx predictfun-mcp
+GRAPH_API_KEY=your-key npx predictfun-mcp
 ```
+
+## Network & Data Behavior
+
+- All tool calls make GraphQL requests to The Graph Gateway (`gateway.thegraph.com`) using your API key.
+- Three subgraphs are queried: predictfun-orderbook, predictfun-positions, and predictfun-yield (subgraph IDs are built into the server).
+- No local database or persistent storage is used.
+- The SSE transport (`--http` / `--http-only`) starts a local HTTP server on port 3850 (configurable via `MCP_HTTP_PORT` env var).
 
 ## Use Cases
 
