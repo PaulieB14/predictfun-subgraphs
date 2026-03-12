@@ -105,6 +105,27 @@ An MCP (Model Context Protocol) server that gives AI agents structured access to
 
 Subgraph IDs are built in. Queries go through [The Graph Gateway](https://thegraph.com/docs/en/querying/graphql-api/) and are billed to your API key.
 
+### OpenClaw / Remote Agents (SSE)
+
+```bash
+# Dual transport — stdio + SSE on port 3850
+GRAPH_API_KEY=your-key npx predictfun-mcp --http
+
+# SSE only (for remote/server deployments)
+GRAPH_API_KEY=your-key npx predictfun-mcp --http-only
+
+# Custom port
+MCP_HTTP_PORT=4000 GRAPH_API_KEY=your-key npx predictfun-mcp --http
+```
+
+Point your agent at: `http://localhost:3850/sse`
+
+| Invocation | Transports | Use case |
+|---|---|---|
+| `npx predictfun-mcp` | stdio | Claude Desktop, Cursor, Claude Code |
+| `npx predictfun-mcp --http` | stdio + SSE :3850 | Dual — local + remote agents |
+| `npx predictfun-mcp --http-only` | SSE :3850 | OpenClaw, remote deployments |
+
 ### Tools (14)
 
 #### Data Tools
