@@ -1293,10 +1293,21 @@ server.tool(
 
     // 3. Oracle Type
     if (cond) {
+      const oracleInfo = contractLabel(cond.oracle);
       let oracleTag = "standard";
-      if (cond.source.includes("NegRisk")) {
+      let contractName: string | null = null;
+      let contractRole: string | null = null;
+
+      if (oracleInfo.is_contract) {
+        contractName = oracleInfo.contract_name!;
+        contractRole = oracleInfo.contract_role!;
+        if (contractName === "NegRiskAdapter") oracleTag = "neg_risk_adapter";
+        else if (contractName === "CTFOracle") oracleTag = "ctf_oracle";
+        else if (contractName === "YieldOracle") oracleTag = "yield_oracle";
+      } else if (cond.source.includes("NegRisk")) {
         oracleTag = "neg_risk";
       }
+
       // Check if oracle is a UMA oracle by looking for oracle requests
       try {
         const oracleData = await query(
@@ -1312,6 +1323,9 @@ server.tool(
       tags.oracle_type = {
         tag: oracleTag,
         oracle_address: cond.oracle,
+        ...(contractName && { contract_name: contractName }),
+        ...(contractRole && { contract_role: contractRole }),
+        is_protocol_contract: oracleInfo.is_contract,
         source: cond.source,
         outcome_slots: parseInt(cond.outcomeSlotCount),
       };
@@ -1334,18 +1348,30 @@ server.tool(
       const oiVolumeRatio = volume > 0 ? oi / volume : null;
       const concentrated = top3Pct >= PERSONA_THRESHOLDS.concentrated_top3_pct;
 
+      // Zombie OI: resolved market with remaining open interest
+      const isZombieOi = cond.resolved && oi > 0;
+      const daysSinceResolution = cond.resolved && cond.resolvedAt
+        ? Math.round((nowUnix() - parseInt(cond.resolvedAt)) / 86400)
+        : null;
+
       tags.tail_risk = {
         concentrated_oi: concentrated,
         top_3_holders_pct: Math.round(top3Pct * 1000) / 10,
-        top_holders: holders.slice(0, 3).map((h: any) => ({
-          address: h.user.id,
-          position: parseFloat(h.netQuantity),
-        })),
+        top_holders: holders.slice(0, 3).map((h: any) => {
+          const ci = contractLabel(h.user.id);
+          return {
+            address: h.user.id,
+            position: parseFloat(h.netQuantity),
+            ...(ci.is_contract && { is_contract: true, contract_name: ci.contract_name }),
+          };
+        }),
         oi_volume_ratio: oiVolumeRatio ? Math.round(oiVolumeRatio * 1000) / 1000 : null,
         open_interest: oi,
+        ...(isZombieOi && { zombie_oi: true, unredeemed_amount: oi, days_since_resolution: daysSinceResolution }),
         flags: [
           ...(concentrated ? ["concentrated_oi"] : []),
           ...(oiVolumeRatio && oiVolumeRatio > 1 ? ["illiquid_exit"] : []),
+          ...(isZombieOi ? ["zombie_oi"] : []),
         ],
       };
     }
