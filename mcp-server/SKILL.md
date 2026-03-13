@@ -28,14 +28,23 @@ Structured access to Predict.fun prediction market data on BNB Chain — platfor
 
 ## Protocol Intelligence
 
-The server includes a registry of known Predict.fun infrastructure contracts:
+The server includes a complete registry of 14 Predict.fun infrastructure contracts across all three subgraphs:
 
-- **NegRiskAdapter** — Oracle for NEG_RISK_YIELD markets
-- **CTFOracle** — Oracle for CT_NON_YIELD markets
-- **YieldOracle** — Oracle for CT_YIELD markets
-- **NegRiskOperator** — Prepares and manages NegRisk markets
+**Orderbook contracts:**
+- **CTFExchange (Non-Yield / Yield)** — On-chain order execution and settlement
+- **NegRiskCtfExchange (Non-Yield / Yield)** — Multi-outcome market order execution
 
-These are automatically filtered from leaderboards and whale lists, labeled in market details, and flagged when profiled directly — preventing false positives like protocol adapters appearing as top whales or showing misleading P&L.
+**Positions contracts:**
+- **ConditionalTokens (Non-Yield / Yield)** — ERC1155 conditional token management
+- **NegRisk ConditionalTokens (Yield)** — NegRisk yield-bearing tokens
+- **NegRiskAdapter (Non-Yield / Yield)** — Oracle resolution for multi-outcome markets
+- **NegRiskOperator (Non-Yield / Yield)** — Market preparation and oracle operations
+
+**Yield contracts:**
+- **RewardDistributor** — Yield reward distribution
+- **UMA Optimistic Oracle** — Price resolution via UMA protocol
+
+These are automatically filtered from leaderboards and whale lists, labeled in market details, and flagged when profiled directly. Additionally, all addresses are checked via BSC RPC (`eth_getCode`) to detect third-party smart contracts (vaults, bots, strategies) vs human wallets (EOAs).
 
 All table outputs use full condition IDs and wallet addresses (no truncation) to support agent tool chaining.
 

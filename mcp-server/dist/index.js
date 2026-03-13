@@ -121,10 +121,22 @@ function marketLabel(id, names) {
 // These are Predict.fun infrastructure contracts, not human traders.
 // Used to filter leaderboards/whale lists and label oracle addresses.
 const KNOWN_CONTRACTS = {
-    "0x41dce1a4b8fb5e6327701750af6231b7cd0b2a40": { name: "NegRiskAdapter", role: "Oracle — resolves NEG_RISK_YIELD markets" },
-    "0x242e09e8e0e3b3fee28e9a0e1951d0ef0dcebbfc": { name: "CTFOracle", role: "Oracle — resolves CT_NON_YIELD markets" },
-    "0x947c53c4195e67d2b0e57760c83e44ef44f0ef0b": { name: "YieldOracle", role: "Oracle — resolves CT_YIELD markets" },
-    "0xf64b4bfcce0890a88af393ce98fa5e1e7be6951e": { name: "NegRiskOperator", role: "Operator — prepares and manages NegRisk markets" },
+    // ─── Orderbook subgraph contracts ───
+    "0x8bc070bedab741406f4b1eb65a72bee27894b689": { name: "CTFExchange (Non-Yield)", role: "Exchange — matches orders for non-yield markets" },
+    "0x6beb5a40c032afc305961162d8204cda16decfa5": { name: "CTFExchange (Yield)", role: "Exchange — matches orders for yield-bearing markets" },
+    "0x365fb81bd4a24d6303cd2f19c349de6894d8d58a": { name: "NegRiskCtfExchange (Non-Yield)", role: "Exchange — matches NegRisk orders for non-yield markets" },
+    "0x8a289d458f5a134ba40015085a8f50ffb681b41d": { name: "NegRiskCtfExchange (Yield)", role: "Exchange — matches NegRisk orders for yield-bearing markets" },
+    // ─── Positions subgraph contracts ───
+    "0x22da1810b194ca018378464a58f6ac2b10c9d244": { name: "ConditionalTokens (Non-Yield)", role: "CTF — manages conditional token splits/merges/redemptions" },
+    "0x9400f8ad57e9e0f352345935d6d3175975eb1d9f": { name: "ConditionalTokens (Yield)", role: "CTF — manages yield-bearing conditional tokens via Venus" },
+    "0xf64b0b318aaf83bd9071110af24d24445719a07f": { name: "NegRisk ConditionalTokens (Yield)", role: "CTF — manages NegRisk yield-bearing conditional tokens" },
+    "0xc3cf7c252f65e0d8d88537df96569ae94a7f1a6e": { name: "NegRiskAdapter (Non-Yield)", role: "Oracle — resolves NEG_RISK_NON_YIELD markets" },
+    "0x41dce1a4b8fb5e6327701750af6231b7cd0b2a40": { name: "NegRiskAdapter (Yield)", role: "Oracle — resolves NEG_RISK_YIELD markets" },
+    "0xbb7250101e0e3611d7e136ffe73bc24b98e3e175": { name: "NegRiskOperator (Yield)", role: "Operator — prepares NegRisk yield markets" },
+    "0x56020f5024641d577cb54032af70a23a986ecffd": { name: "NegRiskOperator (Non-Yield)", role: "Operator — prepares NegRisk non-yield markets" },
+    // ─── Yield subgraph contracts ───
+    "0x14e3a0a4ab4e4fa60fc6b4acce200afad9233ece": { name: "RewardDistributor", role: "Distributes yield rewards to position holders" },
+    "0x76f4632032d3e16fe15e06ddb60b53c67bce17a0": { name: "UMA Optimistic Oracle", role: "Oracle — provides price resolution via UMA protocol" },
 };
 function isKnownContract(addr) {
     return addr.toLowerCase() in KNOWN_CONTRACTS;
