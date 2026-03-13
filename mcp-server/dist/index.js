@@ -24,6 +24,46 @@ const ENDPOINTS = {
     positions: `https://gateway.thegraph.com/api/${API_KEY}/subgraphs/id/${SUBGRAPH_IDS.positions}`,
     yield: `https://gateway.thegraph.com/api/${API_KEY}/subgraphs/id/${SUBGRAPH_IDS.yield}`,
 };
+// ─── BNB Chain RPC ──────────────────────────────────────────────────────────
+const BSC_RPC = "https://bsc-dataseed.binance.org/";
+async function isContract(address) {
+    try {
+        const res = await fetch(BSC_RPC, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                jsonrpc: "2.0",
+                method: "eth_getCode",
+                params: [address.toLowerCase(), "latest"],
+                id: 1,
+            }),
+        });
+        const json = await res.json();
+        return json.result && json.result.length > 4; // "0x" = EOA, longer = contract
+    }
+    catch {
+        return false; // Default to EOA on error
+    }
+}
+async function classifyAddresses(addresses) {
+    const results = new Map();
+    // Check known contracts first (free)
+    const unknown = [];
+    for (const addr of addresses) {
+        const lower = addr.toLowerCase();
+        if (lower in KNOWN_CONTRACTS) {
+            results.set(lower, true);
+        }
+        else {
+            unknown.push(lower);
+        }
+    }
+    // Batch RPC calls for unknown addresses (parallel, max 10)
+    const batch = unknown.slice(0, 10);
+    const checks = await Promise.all(batch.map((a) => isContract(a)));
+    batch.forEach((addr, i) => results.set(addr, checks[i]));
+    return results;
+}
 // ─── GraphQL Helper ──────────────────────────────────────────────────────────
 async function query(endpoint, gql) {
     const res = await fetch(endpoint, {
@@ -296,12 +336,17 @@ server.tool("get_market_details", "Get full details for a specific market/condit
         lines.push(`- Last Trade: ${fmtDate(market.lastTradeAt)}`);
     }
     if (posData.userPositions.length > 0) {
+        const holderAddrs = posData.userPositions.map((p) => p.user.id);
+        const holderTypes = await classifyAddresses(holderAddrs);
         lines.push("\n## Top Holders");
         lines.push("| Address | Type | Net Position | Total Split | Total Merged |");
         lines.push("|---|---|---|---|---|");
         posData.userPositions.forEach((p) => {
             const ci = contractLabel(p.user.id);
-            const typeCol = ci.is_contract ? `🤖 ${ci.contract_name}` : "Trader";
+            const isContractAddr = holderTypes.get(p.user.id.toLowerCase());
+            const typeCol = ci.is_contract
+                ? `Protocol (${ci.contract_name})`
+                : isContractAddr ? "Contract" : "EOA";
             lines.push(`| ${p.user.id} | ${typeCol} | ${fmtUsd(p.netQuantity)} | ${fmtUsd(p.totalSplit)} | ${fmtUsd(p.totalMerged)} |`);
         });
     }
@@ -330,9 +375,12 @@ server.tool("get_trader_profile", "Get a trader's full profile: trading history,
         };
     }
     const ci = contractLabel(addr);
+    const addrIsContract = ci.is_contract || await isContract(addr);
     const lines = ci.is_contract
         ? [`# ${ci.contract_name} (Protocol Contract)\n`, `**${ci.contract_role}**\n`, `Address: ${addr}\n`, `> ⚠ This is a Predict.fun infrastructure contract, not a human trader. Metrics below reflect protocol operations, not trading activity.\n`]
-        : [`# Trader ${fmtAddr(address)}\n`];
+        : addrIsContract
+            ? [`# Smart Contract ${fmtAddr(address)}\n`, `Address: ${addr}\n`, `> This address is a smart contract (likely a vault, strategy, or bot). Metrics reflect automated contract operations.\n`]
+            : [`# Trader ${fmtAddr(address)}\n`];
     if (obAcct) {
         const netPnl = parseFloat(posAcct?.totalPayouts || "0") -
             parseFloat(posAcct?.totalSplitVolume || "0") +
@@ -507,19 +555,22 @@ server.tool("get_whale_positions", "Find the largest position holders across all
     const humanPositions = (data?.userPositions || []).filter((p) => !isKnownContract(p.user.id));
     const whaleIds = humanPositions.map((p) => p.condition.id);
     const whaleNames = await resolveMarketNames(whaleIds);
+    const sliced = humanPositions.slice(0, limit);
+    const addrTypes = await classifyAddresses(sliced.map((p) => p.user.id));
     const lines = [
         `# Whale Positions (min ${fmtUsd(min_position.toString())})\n`,
         `*Protocol contracts (${Object.keys(KNOWN_CONTRACTS).length}) excluded*\n`,
-        "| # | Address | Position | Condition ID | Market | Market OI | % of OI |",
-        "|---|---|---|---|---|---|---|",
+        "| # | Address | Type | Position | Condition ID | Market | Market OI | % of OI |",
+        "|---|---|---|---|---|---|---|---|",
     ];
-    humanPositions.slice(0, limit).forEach((p, i) => {
+    sliced.forEach((p, i) => {
         const pctOi = parseFloat(p.condition.openInterest) > 0
             ? ((parseFloat(p.netQuantity) /
                 parseFloat(p.condition.openInterest)) *
                 100).toFixed(1)
             : "N/A";
-        lines.push(`| ${i + 1} | ${p.user.id} | ${fmtUsd(p.netQuantity)} | ${p.condition.id} | ${marketLabel(p.condition.id, whaleNames)} | ${fmtUsd(p.condition.openInterest)} | ${pctOi}% |`);
+        const typeTag = addrTypes.get(p.user.id.toLowerCase()) ? "Contract" : "EOA";
+        lines.push(`| ${i + 1} | ${p.user.id} | ${typeTag} | ${fmtUsd(p.netQuantity)} | ${p.condition.id} | ${marketLabel(p.condition.id, whaleNames)} | ${fmtUsd(p.condition.openInterest)} | ${pctOi}% |`);
     });
     return { content: [{ type: "text", text: lines.join("\n") }] };
 });
@@ -541,28 +592,34 @@ server.tool("get_leaderboard", "Get the top traders on Predict.fun by volume, P&
     if (rank_by === "payouts") {
         const data = await query(ENDPOINTS.positions, `{ accounts(first: ${fetchLimit}, orderBy: totalPayouts, orderDirection: desc, where: { totalPayouts_gt: "0" }) { id splitCount mergeCount redeemCount totalSplitVolume totalMergeVolume totalPayouts } }`);
         const humans = (data?.accounts || []).filter((a) => !isKnownContract(a.id));
+        const sliced = humans.slice(0, limit);
+        const addrTypes = await classifyAddresses(sliced.map((a) => a.id));
         lines.push(`# Top ${limit} Traders by Payouts\n`);
         lines.push(`*Protocol contracts excluded*\n`);
-        lines.push("| # | Address | Payouts | Invested | Merged | Redemptions | Est. P&L |");
-        lines.push("|---|---|---|---|---|---|---|");
-        humans.slice(0, limit).forEach((a, i) => {
+        lines.push("| # | Address | Type | Payouts | Invested | Merged | Redemptions | Est. P&L |");
+        lines.push("|---|---|---|---|---|---|---|---|");
+        sliced.forEach((a, i) => {
             const pnl = parseFloat(a.totalPayouts) +
                 parseFloat(a.totalMergeVolume) -
                 parseFloat(a.totalSplitVolume);
-            lines.push(`| ${i + 1} | ${a.id} | ${fmtUsd(a.totalPayouts)} | ${fmtUsd(a.totalSplitVolume)} | ${fmtUsd(a.totalMergeVolume)} | ${a.redeemCount} | ${fmtUsd(pnl.toString())} |`);
+            const typeTag = addrTypes.get(a.id.toLowerCase()) ? "Contract" : "EOA";
+            lines.push(`| ${i + 1} | ${a.id} | ${typeTag} | ${fmtUsd(a.totalPayouts)} | ${fmtUsd(a.totalSplitVolume)} | ${fmtUsd(a.totalMergeVolume)} | ${a.redeemCount} | ${fmtUsd(pnl.toString())} |`);
         });
     }
     else {
         const orderBy = rank_by === "trades" ? "totalTrades" : "totalVolume";
         const data = await query(ENDPOINTS.orderbook, `{ accounts(first: ${fetchLimit}, orderBy: ${orderBy}, orderDirection: desc) { id totalTrades totalVolume totalFees makerTrades takerTrades } }`);
         const humans = (data?.accounts || []).filter((a) => !isKnownContract(a.id));
+        const sliced = humans.slice(0, limit);
+        const addrTypes = await classifyAddresses(sliced.map((a) => a.id));
         const label = rank_by === "trades" ? "Trades" : "Volume";
         lines.push(`# Top ${limit} Traders by ${label}\n`);
         lines.push(`*Protocol contracts excluded*\n`);
-        lines.push("| # | Address | Volume | Trades | Fees | Maker | Taker |");
-        lines.push("|---|---|---|---|---|---|---|");
-        humans.slice(0, limit).forEach((a, i) => {
-            lines.push(`| ${i + 1} | ${a.id} | ${fmtUsd(a.totalVolume)} | ${parseInt(a.totalTrades).toLocaleString()} | ${fmtUsd(a.totalFees)} | ${parseInt(a.makerTrades).toLocaleString()} | ${parseInt(a.takerTrades).toLocaleString()} |`);
+        lines.push("| # | Address | Type | Volume | Trades | Fees | Maker | Taker |");
+        lines.push("|---|---|---|---|---|---|---|---|");
+        sliced.forEach((a, i) => {
+            const typeTag = addrTypes.get(a.id.toLowerCase()) ? "Contract" : "EOA";
+            lines.push(`| ${i + 1} | ${a.id} | ${typeTag} | ${fmtUsd(a.totalVolume)} | ${parseInt(a.totalTrades).toLocaleString()} | ${fmtUsd(a.totalFees)} | ${parseInt(a.makerTrades).toLocaleString()} | ${parseInt(a.takerTrades).toLocaleString()} |`);
         });
     }
     return { content: [{ type: "text", text: lines.join("\n") }] };
