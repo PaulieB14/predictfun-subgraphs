@@ -62,7 +62,7 @@ async function resolveMarketNames(conditionIds) {
     try {
         const data = await query(ENDPOINTS.orderbook, `{ negRiskQuestions(where: { id_in: [${qFilter}] }) { id question market { id title } } negRiskMarkets(where: { id_in: [${qFilter}] }) { id title } }`);
         for (const q of data.negRiskQuestions || []) {
-            names.set(q.id, q.question || q.market?.title || fmtAddr(q.id));
+            names.set(q.id, q.question || q.market?.title || q.id);
         }
         for (const m of data.negRiskMarkets || []) {
             if (m.title)
@@ -75,7 +75,7 @@ async function resolveMarketNames(conditionIds) {
     return names;
 }
 function marketLabel(id, names) {
-    return names.get(id) || fmtAddr(id);
+    return names.get(id) || id;
 }
 // ─── Meta-Tool Constants ────────────────────────────────────────────────────
 const PERSONA_THRESHOLDS = {
@@ -193,10 +193,10 @@ server.tool("get_top_markets", "Get the top prediction markets ranked by volume,
         const ids = data.conditions.map((c) => c.id);
         const names = await resolveMarketNames(ids);
         lines.push(`# Top ${limit} Markets by Open Interest\n`);
-        lines.push("| # | Market | Condition ID | Open Interest | Splits | Merges | Resolved |");
+        lines.push("| # | Condition ID | Market | Open Interest | Splits | Merges | Resolved |");
         lines.push("|---|---|---|---|---|---|---|");
         data.conditions.forEach((c, i) => {
-            lines.push(`| ${i + 1} | ${marketLabel(c.id, names)} | ${c.id} | ${fmtUsd(c.openInterest)} | ${c.splitCount} | ${c.mergeCount} | ${c.resolved ? "Yes" : "No"} |`);
+            lines.push(`| ${i + 1} | ${c.id} | ${marketLabel(c.id, names)} | ${fmtUsd(c.openInterest)} | ${c.splitCount} | ${c.mergeCount} | ${c.resolved ? "Yes" : "No"} |`);
         });
     }
     else {
@@ -206,10 +206,10 @@ server.tool("get_top_markets", "Get the top prediction markets ranked by volume,
         const names = await resolveMarketNames(ids);
         const label = rank_by === "trades" ? "Trade Count" : "Volume";
         lines.push(`# Top ${limit} Markets by ${label}\n`);
-        lines.push("| # | Market | Condition ID | Volume | Trades | Fees | Exchange |");
+        lines.push("| # | Condition ID | Market | Volume | Trades | Fees | Exchange |");
         lines.push("|---|---|---|---|---|---|---|");
         (data?.markets || []).forEach((m, i) => {
-            lines.push(`| ${i + 1} | ${marketLabel(m.id, names)} | ${m.id} | ${fmtUsd(m.volume)} | ${parseInt(m.tradeCount).toLocaleString()} | ${fmtUsd(m.fees)} | ${m.exchange} |`);
+            lines.push(`| ${i + 1} | ${m.id} | ${marketLabel(m.id, names)} | ${fmtUsd(m.volume)} | ${parseInt(m.tradeCount).toLocaleString()} | ${fmtUsd(m.fees)} | ${m.exchange} |`);
         });
     }
     return { content: [{ type: "text", text: lines.join("\n") }] };
@@ -266,7 +266,7 @@ server.tool("get_market_details", "Get full details for a specific market/condit
         lines.push("| Address | Net Position | Total Split | Total Merged |");
         lines.push("|---|---|---|---|");
         posData.userPositions.forEach((p) => {
-            lines.push(`| ${fmtAddr(p.user.id)} | ${fmtUsd(p.netQuantity)} | ${fmtUsd(p.totalSplit)} | ${fmtUsd(p.totalMerged)} |`);
+            lines.push(`| ${p.user.id} | ${fmtUsd(p.netQuantity)} | ${fmtUsd(p.totalSplit)} | ${fmtUsd(p.totalMerged)} |`);
         });
     }
     return { content: [{ type: "text", text: lines.join("\n") }] };
@@ -360,10 +360,10 @@ server.tool("get_recent_activity", "Get recent activity on Predict.fun: latest t
             const splitIds = data.splitEvents.map((e) => e.condition.id);
             const splitNames = await resolveMarketNames(splitIds);
             lines.push(`# Recent ${limit} Position Splits\n`);
-            lines.push("| Time | User | Address | Amount | Market | Condition ID |");
-            lines.push("|---|---|---|---|---|---|");
+            lines.push("| Time | Address | Amount | Condition ID | Market |");
+            lines.push("|---|---|---|---|---|");
             data.splitEvents.forEach((e) => {
-                lines.push(`| ${fmtDate(e.timestamp)} | ${fmtAddr(e.stakeholder)} | ${e.stakeholder} | ${fmtUsd(e.amount)} | ${marketLabel(e.condition.id, splitNames)} | ${e.condition.id} |`);
+                lines.push(`| ${fmtDate(e.timestamp)} | ${e.stakeholder} | ${fmtUsd(e.amount)} | ${e.condition.id} | ${marketLabel(e.condition.id, splitNames)} |`);
             });
             break;
         }
@@ -372,10 +372,10 @@ server.tool("get_recent_activity", "Get recent activity on Predict.fun: latest t
             const mergeIds = data.mergeEvents.map((e) => e.condition.id);
             const mergeNames = await resolveMarketNames(mergeIds);
             lines.push(`# Recent ${limit} Position Merges\n`);
-            lines.push("| Time | User | Address | Amount | Market | Condition ID |");
-            lines.push("|---|---|---|---|---|---|");
+            lines.push("| Time | Address | Amount | Condition ID | Market |");
+            lines.push("|---|---|---|---|---|");
             data.mergeEvents.forEach((e) => {
-                lines.push(`| ${fmtDate(e.timestamp)} | ${fmtAddr(e.stakeholder)} | ${e.stakeholder} | ${fmtUsd(e.amount)} | ${marketLabel(e.condition.id, mergeNames)} | ${e.condition.id} |`);
+                lines.push(`| ${fmtDate(e.timestamp)} | ${e.stakeholder} | ${fmtUsd(e.amount)} | ${e.condition.id} | ${marketLabel(e.condition.id, mergeNames)} |`);
             });
             break;
         }
@@ -384,15 +384,15 @@ server.tool("get_recent_activity", "Get recent activity on Predict.fun: latest t
             const redeemIds = data.redemptionEvents.map((e) => e.condition.id);
             const redeemNames = await resolveMarketNames(redeemIds);
             lines.push(`# Recent ${limit} Redemptions\n`);
-            lines.push("| Time | Redeemer | Address | Payout | Market | Condition ID | Winner |");
-            lines.push("|---|---|---|---|---|---|---|");
+            lines.push("| Time | Address | Payout | Condition ID | Market | Winner |");
+            lines.push("|---|---|---|---|---|---|");
             data.redemptionEvents.forEach((e) => {
                 const winner = e.condition.payoutNumerators
                     ? e.condition.payoutNumerators.indexOf("1") === 0
                         ? "Yes"
                         : "No"
                     : "N/A";
-                lines.push(`| ${fmtDate(e.timestamp)} | ${fmtAddr(e.redeemer)} | ${e.redeemer} | ${fmtUsd(e.payout)} | ${marketLabel(e.condition.id, redeemNames)} | ${e.condition.id} | ${winner} |`);
+                lines.push(`| ${fmtDate(e.timestamp)} | ${e.redeemer} | ${fmtUsd(e.payout)} | ${e.condition.id} | ${marketLabel(e.condition.id, redeemNames)} | ${winner} |`);
             });
             break;
         }
@@ -402,7 +402,7 @@ server.tool("get_recent_activity", "Get recent activity on Predict.fun: latest t
             lines.push("| Time | Underlying Amount | vToken Amount | Tx |");
             lines.push("|---|---|---|---|");
             data.yieldClaimEvents.forEach((e) => {
-                lines.push(`| ${fmtDate(e.timestamp)} | ${fmtUsd(e.underlyingAmount)} | ${e.vTokenAmount} | ${fmtAddr(e.transactionHash)} |`);
+                lines.push(`| ${fmtDate(e.timestamp)} | ${fmtUsd(e.underlyingAmount)} | ${e.vTokenAmount} | ${e.transactionHash} |`);
             });
             break;
         }
@@ -430,7 +430,7 @@ server.tool("get_yield_overview", "Get Venus Protocol yield stats: deposits, red
     if (data.tokenMappings.length > 0) {
         lines.push("\n## Token Mappings");
         data.tokenMappings.forEach((tm) => {
-            lines.push(`\n### ${fmtAddr(tm.underlying)} → ${fmtAddr(tm.vToken)}`);
+            lines.push(`\n### ${tm.underlying} → ${tm.vToken}`);
             lines.push(`- Enabled: ${tm.enabled}`);
             lines.push(`- Total Minted: ${fmtUsd(tm.totalVTokenMinted)}`);
             lines.push(`- Total Redeemed: ${fmtUsd(tm.totalRedeemed)}`);
@@ -442,7 +442,7 @@ server.tool("get_yield_overview", "Get Venus Protocol yield stats: deposits, red
         lines.push("| Time | Amount | Tx |");
         lines.push("|---|---|---|");
         data.yieldClaimEvents.forEach((e) => {
-            lines.push(`| ${fmtDate(e.timestamp)} | ${fmtUsd(e.underlyingAmount)} | ${fmtAddr(e.transactionHash)} |`);
+            lines.push(`| ${fmtDate(e.timestamp)} | ${fmtUsd(e.underlyingAmount)} | ${e.transactionHash} |`);
         });
     }
     return { content: [{ type: "text", text: lines.join("\n") }] };
@@ -465,8 +465,8 @@ server.tool("get_whale_positions", "Find the largest position holders across all
     const whaleNames = await resolveMarketNames(whaleIds);
     const lines = [
         `# Whale Positions (min ${fmtUsd(min_position.toString())})\n`,
-        "| # | Trader | Address | Position | Market | Condition ID | Market OI | % of OI |",
-        "|---|---|---|---|---|---|---|---|",
+        "| # | Address | Position | Condition ID | Market | Market OI | % of OI |",
+        "|---|---|---|---|---|---|---|",
     ];
     data.userPositions.forEach((p, i) => {
         const pctOi = parseFloat(p.condition.openInterest) > 0
@@ -474,7 +474,7 @@ server.tool("get_whale_positions", "Find the largest position holders across all
                 parseFloat(p.condition.openInterest)) *
                 100).toFixed(1)
             : "N/A";
-        lines.push(`| ${i + 1} | ${fmtAddr(p.user.id)} | ${p.user.id} | ${fmtUsd(p.netQuantity)} | ${marketLabel(p.condition.id, whaleNames)} | ${p.condition.id} | ${fmtUsd(p.condition.openInterest)} | ${pctOi}% |`);
+        lines.push(`| ${i + 1} | ${p.user.id} | ${fmtUsd(p.netQuantity)} | ${p.condition.id} | ${marketLabel(p.condition.id, whaleNames)} | ${fmtUsd(p.condition.openInterest)} | ${pctOi}% |`);
     });
     return { content: [{ type: "text", text: lines.join("\n") }] };
 });
@@ -495,13 +495,13 @@ server.tool("get_leaderboard", "Get the top traders on Predict.fun by volume, P&
     if (rank_by === "payouts") {
         const data = await query(ENDPOINTS.positions, `{ accounts(first: ${limit}, orderBy: totalPayouts, orderDirection: desc, where: { totalPayouts_gt: "0" }) { id splitCount mergeCount redeemCount totalSplitVolume totalMergeVolume totalPayouts } }`);
         lines.push(`# Top ${limit} Traders by Payouts\n`);
-        lines.push("| # | Trader | Address | Payouts | Invested | Merged | Redemptions | Est. P&L |");
-        lines.push("|---|---|---|---|---|---|---|---|");
+        lines.push("| # | Address | Payouts | Invested | Merged | Redemptions | Est. P&L |");
+        lines.push("|---|---|---|---|---|---|---|");
         data.accounts.forEach((a, i) => {
             const pnl = parseFloat(a.totalPayouts) +
                 parseFloat(a.totalMergeVolume) -
                 parseFloat(a.totalSplitVolume);
-            lines.push(`| ${i + 1} | ${fmtAddr(a.id)} | ${a.id} | ${fmtUsd(a.totalPayouts)} | ${fmtUsd(a.totalSplitVolume)} | ${fmtUsd(a.totalMergeVolume)} | ${a.redeemCount} | ${fmtUsd(pnl.toString())} |`);
+            lines.push(`| ${i + 1} | ${a.id} | ${fmtUsd(a.totalPayouts)} | ${fmtUsd(a.totalSplitVolume)} | ${fmtUsd(a.totalMergeVolume)} | ${a.redeemCount} | ${fmtUsd(pnl.toString())} |`);
         });
     }
     else {
@@ -509,10 +509,10 @@ server.tool("get_leaderboard", "Get the top traders on Predict.fun by volume, P&
         const data = await query(ENDPOINTS.orderbook, `{ accounts(first: ${limit}, orderBy: ${orderBy}, orderDirection: desc) { id totalTrades totalVolume totalFees makerTrades takerTrades } }`);
         const label = rank_by === "trades" ? "Trades" : "Volume";
         lines.push(`# Top ${limit} Traders by ${label}\n`);
-        lines.push("| # | Trader | Address | Volume | Trades | Fees | Maker | Taker |");
-        lines.push("|---|---|---|---|---|---|---|---|");
+        lines.push("| # | Address | Volume | Trades | Fees | Maker | Taker |");
+        lines.push("|---|---|---|---|---|---|---|");
         (data?.accounts || []).forEach((a, i) => {
-            lines.push(`| ${i + 1} | ${fmtAddr(a.id)} | ${a.id} | ${fmtUsd(a.totalVolume)} | ${parseInt(a.totalTrades).toLocaleString()} | ${fmtUsd(a.totalFees)} | ${parseInt(a.makerTrades).toLocaleString()} | ${parseInt(a.takerTrades).toLocaleString()} |`);
+            lines.push(`| ${i + 1} | ${a.id} | ${fmtUsd(a.totalVolume)} | ${parseInt(a.totalTrades).toLocaleString()} | ${fmtUsd(a.totalFees)} | ${parseInt(a.makerTrades).toLocaleString()} | ${parseInt(a.takerTrades).toLocaleString()} |`);
         });
     }
     return { content: [{ type: "text", text: lines.join("\n") }] };
@@ -531,13 +531,13 @@ server.tool("get_resolved_markets", "Get recently resolved markets with their ou
     const resolvedNames = await resolveMarketNames(resolvedIds);
     const lines = [
         `# Recently Resolved Markets\n`,
-        "| # | Market | Winning | OI at Resolution | Splits | Resolved At |",
-        "|---|---|---|---|---|---|",
+        "| # | Condition ID | Market | Winning | OI at Resolution | Splits | Resolved At |",
+        "|---|---|---|---|---|---|---|",
     ];
     data.conditions.forEach((c, i) => {
         const winIdx = c.payoutNumerators.indexOf("1");
         const winner = winIdx === 0 ? "Outcome A (Yes)" : winIdx === 1 ? "Outcome B (No)" : `Outcome ${winIdx}`;
-        lines.push(`| ${i + 1} | ${marketLabel(c.id, resolvedNames)} | ${winner} | ${fmtUsd(c.openInterest)} | ${c.splitCount} | ${fmtDate(c.resolvedAt)} |`);
+        lines.push(`| ${i + 1} | ${c.id} | ${marketLabel(c.id, resolvedNames)} | ${winner} | ${fmtUsd(c.openInterest)} | ${c.splitCount} | ${fmtDate(c.resolvedAt)} |`);
     });
     return { content: [{ type: "text", text: lines.join("\n") }] };
 });

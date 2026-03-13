@@ -77,7 +77,7 @@ async function resolveMarketNames(conditionIds: string[]): Promise<Map<string, s
       `{ negRiskQuestions(where: { id_in: [${qFilter}] }) { id question market { id title } } negRiskMarkets(where: { id_in: [${qFilter}] }) { id title } }`
     );
     for (const q of data.negRiskQuestions || []) {
-      names.set(q.id, q.question || q.market?.title || fmtAddr(q.id));
+      names.set(q.id, q.question || q.market?.title || q.id);
     }
     for (const m of data.negRiskMarkets || []) {
       if (m.title) names.set(m.id, m.title);
@@ -89,7 +89,7 @@ async function resolveMarketNames(conditionIds: string[]): Promise<Map<string, s
 }
 
 function marketLabel(id: string, names: Map<string, string>): string {
-  return names.get(id) || fmtAddr(id);
+  return names.get(id) || id;
 }
 
 // ─── Meta-Tool Constants ────────────────────────────────────────────────────
@@ -254,11 +254,11 @@ server.tool(
       const ids = data.conditions.map((c: any) => c.id);
       const names = await resolveMarketNames(ids);
       lines.push(`# Top ${limit} Markets by Open Interest\n`);
-      lines.push("| # | Market | Condition ID | Open Interest | Splits | Merges | Resolved |");
+      lines.push("| # | Condition ID | Market | Open Interest | Splits | Merges | Resolved |");
       lines.push("|---|---|---|---|---|---|---|");
       data.conditions.forEach((c: any, i: number) => {
         lines.push(
-          `| ${i + 1} | ${marketLabel(c.id, names)} | ${c.id} | ${fmtUsd(c.openInterest)} | ${c.splitCount} | ${c.mergeCount} | ${c.resolved ? "Yes" : "No"} |`
+          `| ${i + 1} | ${c.id} | ${marketLabel(c.id, names)} | ${fmtUsd(c.openInterest)} | ${c.splitCount} | ${c.mergeCount} | ${c.resolved ? "Yes" : "No"} |`
         );
       });
     } else {
@@ -271,11 +271,11 @@ server.tool(
       const names = await resolveMarketNames(ids);
       const label = rank_by === "trades" ? "Trade Count" : "Volume";
       lines.push(`# Top ${limit} Markets by ${label}\n`);
-      lines.push("| # | Market | Condition ID | Volume | Trades | Fees | Exchange |");
+      lines.push("| # | Condition ID | Market | Volume | Trades | Fees | Exchange |");
       lines.push("|---|---|---|---|---|---|---|");
       (data?.markets || []).forEach((m: any, i: number) => {
         lines.push(
-          `| ${i + 1} | ${marketLabel(m.id, names)} | ${m.id} | ${fmtUsd(m.volume)} | ${parseInt(m.tradeCount).toLocaleString()} | ${fmtUsd(m.fees)} | ${m.exchange} |`
+          `| ${i + 1} | ${m.id} | ${marketLabel(m.id, names)} | ${fmtUsd(m.volume)} | ${parseInt(m.tradeCount).toLocaleString()} | ${fmtUsd(m.fees)} | ${m.exchange} |`
         );
       });
     }
@@ -356,7 +356,7 @@ server.tool(
       lines.push("|---|---|---|---|");
       posData.userPositions.forEach((p: any) => {
         lines.push(
-          `| ${fmtAddr(p.user.id)} | ${fmtUsd(p.netQuantity)} | ${fmtUsd(p.totalSplit)} | ${fmtUsd(p.totalMerged)} |`
+          `| ${p.user.id} | ${fmtUsd(p.netQuantity)} | ${fmtUsd(p.totalSplit)} | ${fmtUsd(p.totalMerged)} |`
         );
       });
     }
@@ -498,11 +498,11 @@ server.tool(
         const splitIds = data.splitEvents.map((e: any) => e.condition.id);
         const splitNames = await resolveMarketNames(splitIds);
         lines.push(`# Recent ${limit} Position Splits\n`);
-        lines.push("| Time | User | Address | Amount | Market | Condition ID |");
-        lines.push("|---|---|---|---|---|---|");
+        lines.push("| Time | Address | Amount | Condition ID | Market |");
+        lines.push("|---|---|---|---|---|");
         data.splitEvents.forEach((e: any) => {
           lines.push(
-            `| ${fmtDate(e.timestamp)} | ${fmtAddr(e.stakeholder)} | ${e.stakeholder} | ${fmtUsd(e.amount)} | ${marketLabel(e.condition.id, splitNames)} | ${e.condition.id} |`
+            `| ${fmtDate(e.timestamp)} | ${e.stakeholder} | ${fmtUsd(e.amount)} | ${e.condition.id} | ${marketLabel(e.condition.id, splitNames)} |`
           );
         });
         break;
@@ -516,11 +516,11 @@ server.tool(
         const mergeIds = data.mergeEvents.map((e: any) => e.condition.id);
         const mergeNames = await resolveMarketNames(mergeIds);
         lines.push(`# Recent ${limit} Position Merges\n`);
-        lines.push("| Time | User | Address | Amount | Market | Condition ID |");
-        lines.push("|---|---|---|---|---|---|");
+        lines.push("| Time | Address | Amount | Condition ID | Market |");
+        lines.push("|---|---|---|---|---|");
         data.mergeEvents.forEach((e: any) => {
           lines.push(
-            `| ${fmtDate(e.timestamp)} | ${fmtAddr(e.stakeholder)} | ${e.stakeholder} | ${fmtUsd(e.amount)} | ${marketLabel(e.condition.id, mergeNames)} | ${e.condition.id} |`
+            `| ${fmtDate(e.timestamp)} | ${e.stakeholder} | ${fmtUsd(e.amount)} | ${e.condition.id} | ${marketLabel(e.condition.id, mergeNames)} |`
           );
         });
         break;
@@ -534,8 +534,8 @@ server.tool(
         const redeemIds = data.redemptionEvents.map((e: any) => e.condition.id);
         const redeemNames = await resolveMarketNames(redeemIds);
         lines.push(`# Recent ${limit} Redemptions\n`);
-        lines.push("| Time | Redeemer | Address | Payout | Market | Condition ID | Winner |");
-        lines.push("|---|---|---|---|---|---|---|");
+        lines.push("| Time | Address | Payout | Condition ID | Market | Winner |");
+        lines.push("|---|---|---|---|---|---|");
         data.redemptionEvents.forEach((e: any) => {
           const winner = e.condition.payoutNumerators
             ? e.condition.payoutNumerators.indexOf("1") === 0
@@ -543,7 +543,7 @@ server.tool(
               : "No"
             : "N/A";
           lines.push(
-            `| ${fmtDate(e.timestamp)} | ${fmtAddr(e.redeemer)} | ${e.redeemer} | ${fmtUsd(e.payout)} | ${marketLabel(e.condition.id, redeemNames)} | ${e.condition.id} | ${winner} |`
+            `| ${fmtDate(e.timestamp)} | ${e.redeemer} | ${fmtUsd(e.payout)} | ${e.condition.id} | ${marketLabel(e.condition.id, redeemNames)} | ${winner} |`
           );
         });
         break;
@@ -559,7 +559,7 @@ server.tool(
         lines.push("|---|---|---|---|");
         data.yieldClaimEvents.forEach((e: any) => {
           lines.push(
-            `| ${fmtDate(e.timestamp)} | ${fmtUsd(e.underlyingAmount)} | ${e.vTokenAmount} | ${fmtAddr(e.transactionHash)} |`
+            `| ${fmtDate(e.timestamp)} | ${fmtUsd(e.underlyingAmount)} | ${e.vTokenAmount} | ${e.transactionHash} |`
           );
         });
         break;
@@ -603,7 +603,7 @@ server.tool(
     if (data.tokenMappings.length > 0) {
       lines.push("\n## Token Mappings");
       data.tokenMappings.forEach((tm: any) => {
-        lines.push(`\n### ${fmtAddr(tm.underlying)} → ${fmtAddr(tm.vToken)}`);
+        lines.push(`\n### ${tm.underlying} → ${tm.vToken}`);
         lines.push(`- Enabled: ${tm.enabled}`);
         lines.push(`- Total Minted: ${fmtUsd(tm.totalVTokenMinted)}`);
         lines.push(`- Total Redeemed: ${fmtUsd(tm.totalRedeemed)}`);
@@ -617,7 +617,7 @@ server.tool(
       lines.push("|---|---|---|");
       data.yieldClaimEvents.forEach((e: any) => {
         lines.push(
-          `| ${fmtDate(e.timestamp)} | ${fmtUsd(e.underlyingAmount)} | ${fmtAddr(e.transactionHash)} |`
+          `| ${fmtDate(e.timestamp)} | ${fmtUsd(e.underlyingAmount)} | ${e.transactionHash} |`
         );
       });
     }
@@ -654,8 +654,8 @@ server.tool(
 
     const lines = [
       `# Whale Positions (min ${fmtUsd(min_position.toString())})\n`,
-      "| # | Trader | Address | Position | Market | Condition ID | Market OI | % of OI |",
-      "|---|---|---|---|---|---|---|---|",
+      "| # | Address | Position | Condition ID | Market | Market OI | % of OI |",
+      "|---|---|---|---|---|---|---|",
     ];
 
     data.userPositions.forEach((p: any, i: number) => {
@@ -668,7 +668,7 @@ server.tool(
             ).toFixed(1)
           : "N/A";
       lines.push(
-        `| ${i + 1} | ${fmtAddr(p.user.id)} | ${p.user.id} | ${fmtUsd(p.netQuantity)} | ${marketLabel(p.condition.id, whaleNames)} | ${p.condition.id} | ${fmtUsd(p.condition.openInterest)} | ${pctOi}% |`
+        `| ${i + 1} | ${p.user.id} | ${fmtUsd(p.netQuantity)} | ${p.condition.id} | ${marketLabel(p.condition.id, whaleNames)} | ${fmtUsd(p.condition.openInterest)} | ${pctOi}% |`
       );
     });
 
@@ -702,15 +702,15 @@ server.tool(
         `{ accounts(first: ${limit}, orderBy: totalPayouts, orderDirection: desc, where: { totalPayouts_gt: "0" }) { id splitCount mergeCount redeemCount totalSplitVolume totalMergeVolume totalPayouts } }`
       );
       lines.push(`# Top ${limit} Traders by Payouts\n`);
-      lines.push("| # | Trader | Address | Payouts | Invested | Merged | Redemptions | Est. P&L |");
-      lines.push("|---|---|---|---|---|---|---|---|");
+      lines.push("| # | Address | Payouts | Invested | Merged | Redemptions | Est. P&L |");
+      lines.push("|---|---|---|---|---|---|---|");
       data.accounts.forEach((a: any, i: number) => {
         const pnl =
           parseFloat(a.totalPayouts) +
           parseFloat(a.totalMergeVolume) -
           parseFloat(a.totalSplitVolume);
         lines.push(
-          `| ${i + 1} | ${fmtAddr(a.id)} | ${a.id} | ${fmtUsd(a.totalPayouts)} | ${fmtUsd(a.totalSplitVolume)} | ${fmtUsd(a.totalMergeVolume)} | ${a.redeemCount} | ${fmtUsd(pnl.toString())} |`
+          `| ${i + 1} | ${a.id} | ${fmtUsd(a.totalPayouts)} | ${fmtUsd(a.totalSplitVolume)} | ${fmtUsd(a.totalMergeVolume)} | ${a.redeemCount} | ${fmtUsd(pnl.toString())} |`
         );
       });
     } else {
@@ -721,11 +721,11 @@ server.tool(
       );
       const label = rank_by === "trades" ? "Trades" : "Volume";
       lines.push(`# Top ${limit} Traders by ${label}\n`);
-      lines.push("| # | Trader | Address | Volume | Trades | Fees | Maker | Taker |");
-      lines.push("|---|---|---|---|---|---|---|---|");
+      lines.push("| # | Address | Volume | Trades | Fees | Maker | Taker |");
+      lines.push("|---|---|---|---|---|---|---|");
       (data?.accounts || []).forEach((a: any, i: number) => {
         lines.push(
-          `| ${i + 1} | ${fmtAddr(a.id)} | ${a.id} | ${fmtUsd(a.totalVolume)} | ${parseInt(a.totalTrades).toLocaleString()} | ${fmtUsd(a.totalFees)} | ${parseInt(a.makerTrades).toLocaleString()} | ${parseInt(a.takerTrades).toLocaleString()} |`
+          `| ${i + 1} | ${a.id} | ${fmtUsd(a.totalVolume)} | ${parseInt(a.totalTrades).toLocaleString()} | ${fmtUsd(a.totalFees)} | ${parseInt(a.makerTrades).toLocaleString()} | ${parseInt(a.takerTrades).toLocaleString()} |`
         );
       });
     }
@@ -758,8 +758,8 @@ server.tool(
 
     const lines = [
       `# Recently Resolved Markets\n`,
-      "| # | Market | Winning | OI at Resolution | Splits | Resolved At |",
-      "|---|---|---|---|---|---|",
+      "| # | Condition ID | Market | Winning | OI at Resolution | Splits | Resolved At |",
+      "|---|---|---|---|---|---|---|",
     ];
 
     data.conditions.forEach((c: any, i: number) => {
@@ -767,7 +767,7 @@ server.tool(
       const winner =
         winIdx === 0 ? "Outcome A (Yes)" : winIdx === 1 ? "Outcome B (No)" : `Outcome ${winIdx}`;
       lines.push(
-        `| ${i + 1} | ${marketLabel(c.id, resolvedNames)} | ${winner} | ${fmtUsd(c.openInterest)} | ${c.splitCount} | ${fmtDate(c.resolvedAt)} |`
+        `| ${i + 1} | ${c.id} | ${marketLabel(c.id, resolvedNames)} | ${winner} | ${fmtUsd(c.openInterest)} | ${c.splitCount} | ${fmtDate(c.resolvedAt)} |`
       );
     });
 
