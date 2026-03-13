@@ -96,7 +96,6 @@ function marketLabel(id: string, names: Map<string, string>): string {
 
 const PERSONA_THRESHOLDS = {
   whale_oi_pct: 0.05,          // >5% of market OI
-  whale_low_splits: 5000,      // market has < 5000 splits (filter out only extremely liquid markets)
   arb_min_trades: 100,
   arb_taker_ratio: 0.70,
   early_mover_window: 86400,   // 24h in seconds
@@ -848,14 +847,13 @@ server.tool(
       evidence: Record<string, any>;
     }> = [];
 
-    // 1. Whale Accumulator: >10% of market OI in low-activity markets
+    // 1. Whale Accumulator: holds >5% of market OI
     for (const p of positions) {
       const oi = parseFloat(p.condition.openInterest);
       const net = parseFloat(p.netQuantity);
       if (oi > 0) {
         const pctOi = net / oi;
-        const splits = parseInt(p.condition.splitCount);
-        if (pctOi >= PERSONA_THRESHOLDS.whale_oi_pct && splits < PERSONA_THRESHOLDS.whale_low_splits) {
+        if (pctOi >= PERSONA_THRESHOLDS.whale_oi_pct) {
           personas.push({
             persona: "whale_accumulator",
             confidence: pctOi > 0.25 ? "high" : "medium",
@@ -864,7 +862,7 @@ server.tool(
               position_size: net,
               market_oi: oi,
               pct_of_oi: Math.round(pctOi * 1000) / 10,
-              market_splits: splits,
+              market_splits: parseInt(p.condition.splitCount),
             },
           });
           break; // One match is enough
@@ -872,8 +870,8 @@ server.tool(
       }
     }
 
-    // 2. Yield Farmer: active reward claims
-    if (yldAcct && parseInt(yldAcct.rewardClaimCount) > 2 && parseFloat(yldAcct.totalRewardsClaimed) > 0) {
+    // 2. Yield Farmer: any reward claims
+    if (yldAcct && parseInt(yldAcct.rewardClaimCount) > 0 && parseFloat(yldAcct.totalRewardsClaimed) > 0) {
       personas.push({
         persona: "yield_farmer",
         confidence: parseInt(yldAcct.rewardClaimCount) > 10 ? "high" : "medium",
@@ -1013,14 +1011,13 @@ server.tool(
       case "whale_accumulator": {
         const data = await query(
           ENDPOINTS.positions,
-          `{ userPositions(first: 50, orderBy: netQuantity, orderDirection: desc, where: { netQuantity_gt: "1000" }) { user { id } netQuantity condition { id openInterest splitCount } } }`
+          `{ userPositions(first: 100, orderBy: netQuantity, orderDirection: desc, where: { netQuantity_gt: "0" }) { user { id } netQuantity condition { id openInterest splitCount } } }`
         );
         for (const p of data?.userPositions || []) {
           if (results.length >= limit) break;
           const oi = parseFloat(p.condition.openInterest);
           const net = parseFloat(p.netQuantity);
-          const splits = parseInt(p.condition.splitCount);
-          if (oi > 0 && net / oi >= PERSONA_THRESHOLDS.whale_oi_pct && splits < PERSONA_THRESHOLDS.whale_low_splits) {
+          if (oi > 0 && net / oi >= PERSONA_THRESHOLDS.whale_oi_pct) {
             results.push({
               address: p.user.id,
               evidence: {
@@ -1028,7 +1025,7 @@ server.tool(
                 market_oi: oi,
                 pct_of_oi: Math.round((net / oi) * 1000) / 10,
                 condition_id: p.condition.id,
-                market_splits: splits,
+                market_splits: parseInt(p.condition.splitCount),
               },
             });
           }
@@ -1039,9 +1036,14 @@ server.tool(
       case "yield_farmer": {
         const data = await query(
           ENDPOINTS.yield,
-          `{ yieldAccounts(first: ${limit}, orderBy: totalRewardsClaimed, orderDirection: desc, where: { rewardClaimCount_gt: "1" }) { id totalRewardsClaimed rewardClaimCount } }`
+          `{ yieldAccounts(first: ${limit}, orderBy: totalRewardsClaimed, orderDirection: desc) { id totalRewardsClaimed rewardClaimCount } }`
         );
-        for (const a of data?.yieldAccounts || []) {
+        if (!data?.yieldAccounts || data.yieldAccounts.length === 0) {
+          return {
+            content: [{ type: "text", text: JSON.stringify({ persona: "yield_farmer", results: [], note: "No yield accounts found on Predict.fun yet. The yield/rewards feature may not be active on this platform." }) }],
+          };
+        }
+        for (const a of data.yieldAccounts) {
           results.push({
             address: a.id,
             evidence: {
