@@ -92,6 +92,27 @@ function marketLabel(id: string, names: Map<string, string>): string {
   return names.get(id) || id;
 }
 
+// ─── Known Protocol Contracts ───────────────────────────────────────────────
+// These are Predict.fun infrastructure contracts, not human traders.
+// Used to filter leaderboards/whale lists and label oracle addresses.
+
+const KNOWN_CONTRACTS: Record<string, { name: string; role: string }> = {
+  "0x41dce1a4b8fb5e6327701750af6231b7cd0b2a40": { name: "NegRiskAdapter", role: "Oracle — resolves NEG_RISK_YIELD markets" },
+  "0x242e09e8e0e3b3fee28e9a0e1951d0ef0dcebbfc": { name: "CTFOracle", role: "Oracle — resolves CT_NON_YIELD markets" },
+  "0x947c53c4195e67d2b0e57760c83e44ef44f0ef0b": { name: "YieldOracle", role: "Oracle — resolves CT_YIELD markets" },
+  "0xf64b4bfcce0890a88af393ce98fa5e1e7be6951e": { name: "NegRiskOperator", role: "Operator — prepares and manages NegRisk markets" },
+};
+
+function isKnownContract(addr: string): boolean {
+  return addr.toLowerCase() in KNOWN_CONTRACTS;
+}
+
+function contractLabel(addr: string): { is_contract: boolean; contract_name?: string; contract_role?: string } {
+  const info = KNOWN_CONTRACTS[addr.toLowerCase()];
+  if (info) return { is_contract: true, contract_name: info.name, contract_role: info.role };
+  return { is_contract: false };
+}
+
 // ─── Meta-Tool Constants ────────────────────────────────────────────────────
 
 const PERSONA_THRESHOLDS = {
@@ -249,16 +270,21 @@ server.tool(
     if (rank_by === "open_interest") {
       const data = await query(
         ENDPOINTS.positions,
-        `{ conditions(first: ${limit}, orderBy: openInterest, orderDirection: desc, where: { openInterest_gt: "0" }) { id openInterest splitCount mergeCount resolved source outcomeSlotCount } }`
+        `{ conditions(first: ${limit}, orderBy: openInterest, orderDirection: desc, where: { openInterest_gt: "0" }) { id openInterest splitCount mergeCount resolved resolvedAt source outcomeSlotCount } }`
       );
       const ids = data.conditions.map((c: any) => c.id);
       const names = await resolveMarketNames(ids);
       lines.push(`# Top ${limit} Markets by Open Interest\n`);
-      lines.push("| # | Condition ID | Market | Open Interest | Splits | Merges | Resolved |");
+      lines.push("| # | Condition ID | Market | Open Interest | Status | Splits | Merges |");
       lines.push("|---|---|---|---|---|---|---|");
       data.conditions.forEach((c: any, i: number) => {
+        let status = c.resolved ? "Resolved" : "Active";
+        if (c.resolved && parseFloat(c.openInterest) > 0) {
+          const days = Math.round((nowUnix() - parseInt(c.resolvedAt)) / 86400);
+          status = `⚠ Zombie OI (${days}d)`;
+        }
         lines.push(
-          `| ${i + 1} | ${c.id} | ${marketLabel(c.id, names)} | ${fmtUsd(c.openInterest)} | ${c.splitCount} | ${c.mergeCount} | ${c.resolved ? "Yes" : "No"} |`
+          `| ${i + 1} | ${c.id} | ${marketLabel(c.id, names)} | ${fmtUsd(c.openInterest)} | ${status} | ${c.splitCount} | ${c.mergeCount} |`
         );
       });
     } else {
@@ -331,11 +357,21 @@ server.tool(
       lines.push(`- Status: ${cond.resolved ? "**Resolved**" : "**Active**"}`);
       lines.push(`- Outcomes: ${cond.outcomeSlotCount}`);
       lines.push(`- Source: ${cond.source}`);
-      lines.push(`- Oracle: ${fmtAddr(cond.oracle)}`);
+      const oracleInfo = contractLabel(cond.oracle);
+      if (oracleInfo.is_contract) {
+        lines.push(`- Oracle: ${cond.oracle} (**${oracleInfo.contract_name}** — ${oracleInfo.contract_role})`);
+      } else {
+        lines.push(`- Oracle: ${cond.oracle}`);
+      }
       lines.push(`- Created: ${fmtDate(cond.createdAt)}`);
       if (cond.resolved) {
         lines.push(`- Resolved: ${fmtDate(cond.resolvedAt)}`);
         lines.push(`- Payouts: [${cond.payoutNumerators.join(", ")}]`);
+        const oi = parseFloat(cond.openInterest);
+        if (oi > 0) {
+          const daysSinceResolution = Math.round((nowUnix() - parseInt(cond.resolvedAt)) / 86400);
+          lines.push(`- **⚠ Zombie OI: ${fmtUsd(cond.openInterest)} unredeemed** (${daysSinceResolution} days since resolution)`);
+        }
       }
       lines.push(`- Open Interest: ${fmtUsd(cond.openInterest)}`);
       lines.push(`- Splits: ${cond.splitCount} | Merges: ${cond.mergeCount}`);
@@ -352,11 +388,13 @@ server.tool(
 
     if (posData.userPositions.length > 0) {
       lines.push("\n## Top Holders");
-      lines.push("| Address | Net Position | Total Split | Total Merged |");
-      lines.push("|---|---|---|---|");
+      lines.push("| Address | Type | Net Position | Total Split | Total Merged |");
+      lines.push("|---|---|---|---|---|");
       posData.userPositions.forEach((p: any) => {
+        const ci = contractLabel(p.user.id);
+        const typeCol = ci.is_contract ? `🤖 ${ci.contract_name}` : "Trader";
         lines.push(
-          `| ${p.user.id} | ${fmtUsd(p.netQuantity)} | ${fmtUsd(p.totalSplit)} | ${fmtUsd(p.totalMerged)} |`
+          `| ${p.user.id} | ${typeCol} | ${fmtUsd(p.netQuantity)} | ${fmtUsd(p.totalSplit)} | ${fmtUsd(p.totalMerged)} |`
         );
       });
     }
@@ -405,7 +443,10 @@ server.tool(
       };
     }
 
-    const lines: string[] = [`# Trader ${fmtAddr(address)}\n`];
+    const ci = contractLabel(addr);
+    const lines: string[] = ci.is_contract
+      ? [`# ${ci.contract_name} (Protocol Contract)\n`, `**${ci.contract_role}**\n`, `Address: ${addr}\n`, `> ⚠ This is a Predict.fun infrastructure contract, not a human trader. Metrics below reflect protocol operations, not trading activity.\n`]
+      : [`# Trader ${fmtAddr(address)}\n`];
 
     if (obAcct) {
       const netPnl =
@@ -644,21 +685,29 @@ server.tool(
       .describe("Minimum position size in USD"),
   },
   async ({ limit, min_position }) => {
+    // Fetch extra to account for filtering out protocol contracts
+    const fetchLimit = limit + Object.keys(KNOWN_CONTRACTS).length;
     const data = await query(
       ENDPOINTS.positions,
-      `{ userPositions(first: ${limit}, orderBy: netQuantity, orderDirection: desc, where: { netQuantity_gt: "${min_position}" }) { id user { id totalSplitVolume totalPayouts } netQuantity totalSplit totalMerged realizedPayout condition { id openInterest resolved source } } }`
+      `{ userPositions(first: ${fetchLimit}, orderBy: netQuantity, orderDirection: desc, where: { netQuantity_gt: "${min_position}" }) { id user { id totalSplitVolume totalPayouts } netQuantity totalSplit totalMerged realizedPayout condition { id openInterest resolved source } } }`
     );
 
-    const whaleIds = data.userPositions.map((p: any) => p.condition.id);
+    // Filter out protocol contracts
+    const humanPositions = (data?.userPositions || []).filter(
+      (p: any) => !isKnownContract(p.user.id)
+    );
+
+    const whaleIds = humanPositions.map((p: any) => p.condition.id);
     const whaleNames = await resolveMarketNames(whaleIds);
 
     const lines = [
       `# Whale Positions (min ${fmtUsd(min_position.toString())})\n`,
+      `*Protocol contracts (${Object.keys(KNOWN_CONTRACTS).length}) excluded*\n`,
       "| # | Address | Position | Condition ID | Market | Market OI | % of OI |",
       "|---|---|---|---|---|---|---|",
     ];
 
-    data.userPositions.forEach((p: any, i: number) => {
+    humanPositions.slice(0, limit).forEach((p: any, i: number) => {
       const pctOi =
         parseFloat(p.condition.openInterest) > 0
           ? (
@@ -695,16 +744,19 @@ server.tool(
   },
   async ({ rank_by, limit }) => {
     const lines: string[] = [];
+    const fetchLimit = limit + Object.keys(KNOWN_CONTRACTS).length;
 
     if (rank_by === "payouts") {
       const data = await query(
         ENDPOINTS.positions,
-        `{ accounts(first: ${limit}, orderBy: totalPayouts, orderDirection: desc, where: { totalPayouts_gt: "0" }) { id splitCount mergeCount redeemCount totalSplitVolume totalMergeVolume totalPayouts } }`
+        `{ accounts(first: ${fetchLimit}, orderBy: totalPayouts, orderDirection: desc, where: { totalPayouts_gt: "0" }) { id splitCount mergeCount redeemCount totalSplitVolume totalMergeVolume totalPayouts } }`
       );
+      const humans = (data?.accounts || []).filter((a: any) => !isKnownContract(a.id));
       lines.push(`# Top ${limit} Traders by Payouts\n`);
+      lines.push(`*Protocol contracts excluded*\n`);
       lines.push("| # | Address | Payouts | Invested | Merged | Redemptions | Est. P&L |");
       lines.push("|---|---|---|---|---|---|---|");
-      data.accounts.forEach((a: any, i: number) => {
+      humans.slice(0, limit).forEach((a: any, i: number) => {
         const pnl =
           parseFloat(a.totalPayouts) +
           parseFloat(a.totalMergeVolume) -
@@ -717,13 +769,15 @@ server.tool(
       const orderBy = rank_by === "trades" ? "totalTrades" : "totalVolume";
       const data = await query(
         ENDPOINTS.orderbook,
-        `{ accounts(first: ${limit}, orderBy: ${orderBy}, orderDirection: desc) { id totalTrades totalVolume totalFees makerTrades takerTrades } }`
+        `{ accounts(first: ${fetchLimit}, orderBy: ${orderBy}, orderDirection: desc) { id totalTrades totalVolume totalFees makerTrades takerTrades } }`
       );
+      const humans = (data?.accounts || []).filter((a: any) => !isKnownContract(a.id));
       const label = rank_by === "trades" ? "Trades" : "Volume";
       lines.push(`# Top ${limit} Traders by ${label}\n`);
+      lines.push(`*Protocol contracts excluded*\n`);
       lines.push("| # | Address | Volume | Trades | Fees | Maker | Taker |");
       lines.push("|---|---|---|---|---|---|---|");
-      (data?.accounts || []).forEach((a: any, i: number) => {
+      humans.slice(0, limit).forEach((a: any, i: number) => {
         lines.push(
           `| ${i + 1} | ${a.id} | ${fmtUsd(a.totalVolume)} | ${parseInt(a.totalTrades).toLocaleString()} | ${fmtUsd(a.totalFees)} | ${parseInt(a.makerTrades).toLocaleString()} | ${parseInt(a.takerTrades).toLocaleString()} |`
         );
@@ -1015,6 +1069,7 @@ server.tool(
         );
         for (const p of data?.userPositions || []) {
           if (results.length >= limit) break;
+          if (isKnownContract(p.user.id)) continue;
           const oi = parseFloat(p.condition.openInterest);
           const net = parseFloat(p.netQuantity);
           if (oi > 0 && net / oi >= PERSONA_THRESHOLDS.whale_oi_pct) {
