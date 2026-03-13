@@ -488,7 +488,7 @@ server.tool("get_trader_profile", "Get a trader's full profile: trading history,
     const addr = address.toLowerCase();
     const [obData, posData, yldData] = await Promise.all([
         query(ENDPOINTS.orderbook, `{ account(id: "${addr}") { id totalTrades totalVolume totalFees makerTrades takerTrades makerVolume takerVolume firstTradeAt lastTradeAt } }`),
-        query(ENDPOINTS.positions, `{ account(id: "${addr}") { id splitCount mergeCount redeemCount totalSplitVolume totalMergeVolume totalPayouts firstSeenAt lastActiveAt } userPositions(first: 10, orderBy: netQuantity, orderDirection: desc, where: { user: "${addr}", netQuantity_gt: "0" }) { id netQuantity totalSplit totalMerged realizedPayout condition { id openInterest resolved } } }`),
+        query(ENDPOINTS.positions, `{ account(id: "${addr}") { id splitCount mergeCount redeemCount totalSplitVolume totalMergeVolume totalPayouts firstSeenAt lastActiveAt } userPositions(first: 10, orderBy: netQuantity, orderDirection: desc, where: { user: "${addr}", netQuantity_gt: "0" }) { id netQuantity totalSplit totalMerged realizedPayout condition { id openInterest resolved resolvedAt payoutNumerators } } }`),
         query(ENDPOINTS.yield, `{ yieldAccount(id: "${addr}") { id totalRewardsClaimed rewardClaimCount firstSeenAt lastActiveAt } }`),
     ]);
     const obAcct = obData?.account;
@@ -535,10 +535,22 @@ server.tool("get_trader_profile", "Get a trader's full profile: trading history,
         const posIds = posData.userPositions.map((p) => p.condition.id);
         const posNames = await resolveMarketNames(posIds);
         lines.push("\n## Active Positions");
-        lines.push("| Market | Net Position | Invested | Merged | Resolved |");
+        lines.push("| Market | Net Position | Invested | Merged | Status |");
         lines.push("|---|---|---|---|---|");
         posData.userPositions.forEach((p) => {
-            lines.push(`| ${marketLabel(p.condition.id, posNames)} | ${fmtUsd(p.netQuantity)} | ${fmtUsd(p.totalSplit)} | ${fmtUsd(p.totalMerged)} | ${p.condition.resolved ? "Yes" : "No"} |`);
+            let status = "Active";
+            if (p.condition.resolved) {
+                const resolvedAt = p.condition.resolvedAt ? parseInt(p.condition.resolvedAt) : 0;
+                const daysSince = resolvedAt ? Math.round((Date.now() / 1000 - resolvedAt) / 86400) : 0;
+                const net = parseFloat(p.netQuantity);
+                if (net > 0 && daysSince > 0) {
+                    status = `⚠ Zombie OI (${daysSince}d unredeemed, ${fmtUsd(p.netQuantity)})`;
+                }
+                else {
+                    status = "Resolved";
+                }
+            }
+            lines.push(`| ${marketLabel(p.condition.id, posNames)} | ${fmtUsd(p.netQuantity)} | ${fmtUsd(p.totalSplit)} | ${fmtUsd(p.totalMerged)} | ${status} |`);
         });
     }
     if (yldAcct) {

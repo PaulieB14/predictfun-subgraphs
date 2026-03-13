@@ -609,7 +609,7 @@ server.tool(
       ),
       query(
         ENDPOINTS.positions,
-        `{ account(id: "${addr}") { id splitCount mergeCount redeemCount totalSplitVolume totalMergeVolume totalPayouts firstSeenAt lastActiveAt } userPositions(first: 10, orderBy: netQuantity, orderDirection: desc, where: { user: "${addr}", netQuantity_gt: "0" }) { id netQuantity totalSplit totalMerged realizedPayout condition { id openInterest resolved } } }`
+        `{ account(id: "${addr}") { id splitCount mergeCount redeemCount totalSplitVolume totalMergeVolume totalPayouts firstSeenAt lastActiveAt } userPositions(first: 10, orderBy: netQuantity, orderDirection: desc, where: { user: "${addr}", netQuantity_gt: "0" }) { id netQuantity totalSplit totalMerged realizedPayout condition { id openInterest resolved resolvedAt payoutNumerators } } }`
       ),
       query(
         ENDPOINTS.yield,
@@ -668,11 +668,22 @@ server.tool(
       const posIds = posData.userPositions.map((p: any) => p.condition.id);
       const posNames = await resolveMarketNames(posIds);
       lines.push("\n## Active Positions");
-      lines.push("| Market | Net Position | Invested | Merged | Resolved |");
+      lines.push("| Market | Net Position | Invested | Merged | Status |");
       lines.push("|---|---|---|---|---|");
       posData.userPositions.forEach((p: any) => {
+        let status = "Active";
+        if (p.condition.resolved) {
+          const resolvedAt = p.condition.resolvedAt ? parseInt(p.condition.resolvedAt) : 0;
+          const daysSince = resolvedAt ? Math.round((Date.now() / 1000 - resolvedAt) / 86400) : 0;
+          const net = parseFloat(p.netQuantity);
+          if (net > 0 && daysSince > 0) {
+            status = `⚠ Zombie OI (${daysSince}d unredeemed, ${fmtUsd(p.netQuantity)})`;
+          } else {
+            status = "Resolved";
+          }
+        }
         lines.push(
-          `| ${marketLabel(p.condition.id, posNames)} | ${fmtUsd(p.netQuantity)} | ${fmtUsd(p.totalSplit)} | ${fmtUsd(p.totalMerged)} | ${p.condition.resolved ? "Yes" : "No"} |`
+          `| ${marketLabel(p.condition.id, posNames)} | ${fmtUsd(p.netQuantity)} | ${fmtUsd(p.totalSplit)} | ${fmtUsd(p.totalMerged)} | ${status} |`
         );
       });
     }
