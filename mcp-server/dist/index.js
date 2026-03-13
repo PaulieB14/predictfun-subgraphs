@@ -281,7 +281,7 @@ server.tool("get_market_details", "Get full details for a specific market/condit
             const oi = parseFloat(cond.openInterest);
             if (oi > 0) {
                 const daysSinceResolution = Math.round((nowUnix() - parseInt(cond.resolvedAt)) / 86400);
-                lines.push(`- **⚠ Zombie OI: ${fmtUsd(cond.openInterest)} unredeemed** (${daysSinceResolution} days since resolution)`);
+                lines.push(`- **⚠ Zombie OI: ${fmtUsd(cond.openInterest)} unredeemed** (${daysSinceResolution} days since resolution — winners must manually redeem via UI)`);
             }
         }
         lines.push(`- Open Interest: ${fmtUsd(cond.openInterest)}`);
@@ -456,12 +456,13 @@ server.tool("get_yield_overview", "Get Venus Protocol yield stats: deposits, red
         parseFloat(g.totalUnderlyingRedeemed);
     const lines = [
         "# Predict.fun Yield Overview (Venus Protocol)\n",
+        "> **Note:** Predict.fun deposits user USDT collateral into Venus Protocol to earn ~3-5% APY while markets are live. The yield shown here represents protocol-level settlement events only. Per-user yield accrues automatically via position value snapshots — it is not individually claimable on-chain. The on-chain yield claim count will appear low relative to total deposits because these are batch protocol settlements, not individual user claims.\n",
         "## Global Stats",
         `- Total Deposited to Venus: ${fmtUsd(g.totalVTokenMinted)}`,
         `- Total Redeemed: ${fmtUsd(g.totalUnderlyingRedeemed)}`,
         `- **Net in Venus: ${fmtUsd(net.toString())}**`,
-        `- Total Yield Claimed: ${fmtUsd(g.totalYieldClaimed)}`,
-        `- Yield Claim Events: ${g.yieldClaimCount}`,
+        `- Total Yield Claimed (protocol settlements): ${fmtUsd(g.totalYieldClaimed)}`,
+        `- Settlement Events: ${g.yieldClaimCount}`,
         `- Reward Claims: ${g.rewardClaimCount} (${fmtUsd(g.totalRewardsClaimed)})`,
         `- Oracle Requests: ${g.totalOracleRequests}`,
         `- Oracle Settlements: ${g.totalOracleSettlements}`,
@@ -926,6 +927,25 @@ server.tool("tag_market_structure", "Classify a market by structural features: r
         };
     }
     const tags = {};
+    // 0. Market Type Classification
+    if (cond) {
+        let marketType = "standard";
+        const src = cond.source.toLowerCase();
+        if (src.includes("negrisk") && src.includes("yield"))
+            marketType = "neg_risk_yield";
+        else if (src.includes("negrisk"))
+            marketType = "neg_risk";
+        else if (src.includes("yield"))
+            marketType = "ct_yield";
+        else if (src.includes("bond"))
+            marketType = "bond";
+        tags.market_type = {
+            tag: marketType,
+            source: cond.source,
+            outcome_slots: parseInt(cond.outcomeSlotCount),
+            ...(marketType === "bond" && { note: "Bond Markets offer fixed-style returns on highly probable outcomes. Lower risk, lower reward." }),
+        };
+    }
     // 1. Resolution Latency
     if (cond) {
         const createdAt = parseInt(cond.createdAt);
