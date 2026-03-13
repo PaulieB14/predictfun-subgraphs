@@ -13,6 +13,11 @@ if (!API_KEY) {
         "See: https://thegraph.com/docs/en/subgraphs/querying/managing-api-keys/");
     process.exit(1);
 }
+// Predict.fun REST API key (optional — enables market name hydration)
+const PREDICT_API_KEY = process.env.PREDICT_API_KEY || "";
+const PREDICT_API_BASE = PREDICT_API_KEY
+    ? "https://api.predict.fun"
+    : "https://api-testnet.predict.fun";
 // Published subgraph IDs on The Graph Network
 const SUBGRAPH_IDS = {
     orderbook: "89T2Z1tzwRB7obJZ8Mpo8N6eiBnsG1hM69VCMkfccEAZ",
@@ -39,30 +44,50 @@ async function isContract(address) {
             }),
         });
         const json = await res.json();
-        return json.result && json.result.length > 4; // "0x" = EOA, longer = contract
+        const code = json.result || "0x";
+        const byteLen = (code.length - 2) / 2;
+        return byteLen;
     }
     catch {
-        return false; // Default to EOA on error
+        return 0;
     }
 }
+// Privy/ERC-1967 smart wallets are ~61 bytes (minimal proxy).
+// Real bots/vaults/strategies have much larger bytecode.
+const SMART_WALLET_MAX_BYTES = 200;
 async function classifyAddresses(addresses) {
     const results = new Map();
-    // Check known contracts first (free)
     const unknown = [];
     for (const addr of addresses) {
         const lower = addr.toLowerCase();
         if (lower in KNOWN_CONTRACTS) {
-            results.set(lower, true);
+            results.set(lower, "protocol");
         }
         else {
             unknown.push(lower);
         }
     }
-    // Batch RPC calls for unknown addresses (parallel, max 10)
     const batch = unknown.slice(0, 10);
     const checks = await Promise.all(batch.map((a) => isContract(a)));
-    batch.forEach((addr, i) => results.set(addr, checks[i]));
+    batch.forEach((addr, i) => {
+        const byteLen = checks[i];
+        if (byteLen === 0)
+            results.set(addr, "eoa");
+        else if (byteLen <= SMART_WALLET_MAX_BYTES)
+            results.set(addr, "user");
+        else
+            results.set(addr, "bot");
+    });
     return results;
+}
+function addrTypeLabel(t) {
+    switch (t) {
+        case "protocol": return "Protocol";
+        case "user": return "User";
+        case "bot": return "Bot";
+        case "eoa": return "EOA";
+        default: return "Unknown";
+    }
 }
 // ─── GraphQL Helper ──────────────────────────────────────────────────────────
 async function query(endpoint, gql) {
@@ -92,25 +117,113 @@ function fmtDate(timestamp) {
 function fmtAddr(addr) {
     return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
 }
-// Resolve condition/market IDs to human-readable names via NegRisk data
+// ─── Predict.fun API market name cache ──────────────────────────────────────
+// Maps conditionId → title/question from the REST API
+const marketNameCache = new Map();
+let marketCacheLoaded = false;
+let marketCacheLoadedAt = 0;
+const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+async function loadMarketNamesFromAPI() {
+    const now = Date.now();
+    if (marketCacheLoaded && now - marketCacheLoadedAt < CACHE_TTL_MS)
+        return;
+    const headers = { "Content-Type": "application/json" };
+    if (PREDICT_API_KEY)
+        headers["x-api-key"] = PREDICT_API_KEY;
+    try {
+        let cursor = null;
+        let pages = 0;
+        const maxPages = 20; // safety limit
+        do {
+            const url = new URL(`${PREDICT_API_BASE}/v1/markets`);
+            url.searchParams.set("first", "100");
+            if (cursor)
+                url.searchParams.set("after", cursor);
+            const res = await fetch(url.toString(), { headers });
+            if (!res.ok)
+                break;
+            const json = await res.json();
+            for (const m of json.data || []) {
+                if (m.conditionId && (m.title || m.question)) {
+                    marketNameCache.set(m.conditionId.toLowerCase(), m.title || m.question);
+                }
+            }
+            cursor = json.cursor || null;
+            pages++;
+        } while (cursor && pages < maxPages);
+        marketCacheLoaded = true;
+        marketCacheLoadedAt = now;
+    }
+    catch {
+        // API unavailable — fall through to subgraph resolution
+    }
+}
+// Resolve condition/market IDs to human-readable names
+// Strategy: conditionId → questionId (positions) → NegRiskQuestion (orderbook) → name
+// Fallback: Predict.fun REST API for non-NegRisk markets
 async function resolveMarketNames(conditionIds) {
     const names = new Map();
     if (conditionIds.length === 0)
         return names;
-    // Try to find as NegRisk questions (most markets are NegRisk)
-    const qFilter = conditionIds.map((id) => `"${id}"`).join(", ");
+    // Step 1: Look up questionIds from positions subgraph
+    const idFilter = conditionIds.map((id) => `"${id}"`).join(", ");
+    let questionIdMap = new Map(); // conditionId → questionId
     try {
-        const data = await query(ENDPOINTS.orderbook, `{ negRiskQuestions(where: { id_in: [${qFilter}] }) { id question market { id title } } negRiskMarkets(where: { id_in: [${qFilter}] }) { id title } }`);
-        for (const q of data.negRiskQuestions || []) {
-            names.set(q.id, q.question || q.market?.title || q.id);
-        }
-        for (const m of data.negRiskMarkets || []) {
-            if (m.title)
-                names.set(m.id, m.title);
+        const posData = await query(ENDPOINTS.positions, `{ conditions(where: { id_in: [${idFilter}] }) { id questionId } }`);
+        for (const c of posData?.conditions || []) {
+            questionIdMap.set(c.id, c.questionId);
         }
     }
     catch {
-        // Fallback: names stay empty, we'll show truncated IDs
+        // positions subgraph unavailable
+    }
+    // Step 2: Resolve questionIds via NegRisk entities in orderbook subgraph
+    const questionIds = [...new Set(questionIdMap.values())];
+    if (questionIds.length > 0) {
+        const qFilter = questionIds.map((id) => `"${id}"`).join(", ");
+        try {
+            const data = await query(ENDPOINTS.orderbook, `{ negRiskQuestions(where: { id_in: [${qFilter}] }) { id question market { id title } } }`);
+            const qNameMap = new Map();
+            for (const q of data?.negRiskQuestions || []) {
+                qNameMap.set(q.id, q.question || q.market?.title || q.id);
+            }
+            // Map back: conditionId → questionId → name
+            for (const [condId, qId] of questionIdMap) {
+                const name = qNameMap.get(qId);
+                if (name)
+                    names.set(condId, name);
+            }
+        }
+        catch {
+            // orderbook subgraph unavailable
+        }
+    }
+    // Also try direct NegRisk market/question lookup by conditionId (some may match directly)
+    const stillMissing = conditionIds.filter((id) => !names.has(id));
+    if (stillMissing.length > 0) {
+        const mFilter = stillMissing.map((id) => `"${id}"`).join(", ");
+        try {
+            const data = await query(ENDPOINTS.orderbook, `{ negRiskQuestions(where: { id_in: [${mFilter}] }) { id question market { id title } } negRiskMarkets(where: { id_in: [${mFilter}] }) { id title } }`);
+            for (const q of data?.negRiskQuestions || []) {
+                if (!names.has(q.id))
+                    names.set(q.id, q.question || q.market?.title || q.id);
+            }
+            for (const m of data?.negRiskMarkets || []) {
+                if (m.title && !names.has(m.id))
+                    names.set(m.id, m.title);
+            }
+        }
+        catch { }
+    }
+    // Step 3: Fallback to Predict.fun REST API for any remaining unresolved IDs
+    const apiMissing = conditionIds.filter((id) => !names.has(id));
+    if (apiMissing.length > 0) {
+        await loadMarketNamesFromAPI();
+        for (const id of apiMissing) {
+            const cached = marketNameCache.get(id.toLowerCase());
+            if (cached)
+                names.set(id, cached);
+        }
     }
     return names;
 }
@@ -357,10 +470,10 @@ server.tool("get_market_details", "Get full details for a specific market/condit
         lines.push("|---|---|---|---|---|");
         posData.userPositions.forEach((p) => {
             const ci = contractLabel(p.user.id);
-            const isContractAddr = holderTypes.get(p.user.id.toLowerCase());
+            const addrType = holderTypes.get(p.user.id.toLowerCase());
             const typeCol = ci.is_contract
                 ? `Protocol (${ci.contract_name})`
-                : isContractAddr ? "Contract" : "EOA";
+                : addrTypeLabel(addrType);
             lines.push(`| ${p.user.id} | ${typeCol} | ${fmtUsd(p.netQuantity)} | ${fmtUsd(p.totalSplit)} | ${fmtUsd(p.totalMerged)} |`);
         });
     }
@@ -389,12 +502,15 @@ server.tool("get_trader_profile", "Get a trader's full profile: trading history,
         };
     }
     const ci = contractLabel(addr);
-    const addrIsContract = ci.is_contract || await isContract(addr);
+    const byteLen = ci.is_contract ? 999 : await isContract(addr);
+    const addrType = ci.is_contract ? "protocol" : byteLen === 0 ? "eoa" : byteLen <= SMART_WALLET_MAX_BYTES ? "user" : "bot";
     const lines = ci.is_contract
         ? [`# ${ci.contract_name} (Protocol Contract)\n`, `**${ci.contract_role}**\n`, `Address: ${addr}\n`, `> ⚠ This is a Predict.fun infrastructure contract, not a human trader. Metrics below reflect protocol operations, not trading activity.\n`]
-        : addrIsContract
-            ? [`# Smart Contract ${fmtAddr(address)}\n`, `Address: ${addr}\n`, `> This address is a smart contract (likely a vault, strategy, or bot). Metrics reflect automated contract operations.\n`]
-            : [`# Trader ${fmtAddr(address)}\n`];
+        : addrType === "bot"
+            ? [`# Bot/Contract ${fmtAddr(address)}\n`, `Address: ${addr}\n`, `> This address is a trading bot or vault contract (${byteLen} bytes of bytecode). Metrics reflect automated operations.\n`]
+            : addrType === "user"
+                ? [`# Trader ${fmtAddr(address)} (Smart Wallet)\n`, `Address: ${addr}\n`]
+                : [`# Trader ${fmtAddr(address)}\n`];
     if (obAcct) {
         const netPnl = parseFloat(posAcct?.totalPayouts || "0") -
             parseFloat(posAcct?.totalSplitVolume || "0") +
@@ -581,7 +697,7 @@ server.tool("get_whale_positions", "Find the largest position holders across all
                 parseFloat(p.condition.openInterest)) *
                 100).toFixed(1)
             : "N/A";
-        const typeTag = addrTypes.get(p.user.id.toLowerCase()) ? "Contract" : "EOA";
+        const typeTag = addrTypeLabel(addrTypes.get(p.user.id.toLowerCase()));
         lines.push(`| ${i + 1} | ${p.user.id} | ${typeTag} | ${fmtUsd(p.netQuantity)} | ${p.condition.id} | ${marketLabel(p.condition.id, whaleNames)} | ${fmtUsd(p.condition.openInterest)} | ${pctOi}% |`);
     });
     return { content: [{ type: "text", text: lines.join("\n") }] };
@@ -612,7 +728,7 @@ server.tool("get_leaderboard", "Get the top traders on Predict.fun by volume, P&
             const pnl = parseFloat(a.totalPayouts) +
                 parseFloat(a.totalMergeVolume) -
                 parseFloat(a.totalSplitVolume);
-            const typeTag = addrTypes.get(a.id.toLowerCase()) ? "Contract" : "EOA";
+            const typeTag = addrTypeLabel(addrTypes.get(a.id.toLowerCase()));
             lines.push(`| ${i + 1} | ${a.id} | ${typeTag} | ${fmtUsd(a.totalPayouts)} | ${fmtUsd(a.totalSplitVolume)} | ${fmtUsd(a.totalMergeVolume)} | ${a.redeemCount} | ${fmtUsd(pnl.toString())} |`);
         });
     }
@@ -627,7 +743,7 @@ server.tool("get_leaderboard", "Get the top traders on Predict.fun by volume, P&
         lines.push("| # | Address | Type | Volume | Trades | Fees | Maker | Taker |");
         lines.push("|---|---|---|---|---|---|---|---|");
         sliced.forEach((a, i) => {
-            const typeTag = addrTypes.get(a.id.toLowerCase()) ? "Contract" : "EOA";
+            const typeTag = addrTypeLabel(addrTypes.get(a.id.toLowerCase()));
             lines.push(`| ${i + 1} | ${a.id} | ${typeTag} | ${fmtUsd(a.totalVolume)} | ${parseInt(a.totalTrades).toLocaleString()} | ${fmtUsd(a.totalFees)} | ${parseInt(a.makerTrades).toLocaleString()} | ${parseInt(a.takerTrades).toLocaleString()} |`);
         });
     }
