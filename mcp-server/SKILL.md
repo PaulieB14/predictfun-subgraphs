@@ -1,3 +1,10 @@
+---
+name: predictfun-mcp
+description: Access Predict.fun prediction market data on BNB Chain — platform stats, market analysis, trader profiling, yield mechanics, and behavioral meta-tools via The Graph.
+metadata:
+  {"openclaw": {"requires": {"bins": ["node"], "env": ["GRAPH_API_KEY"]}, "primaryEnv": "GRAPH_API_KEY", "homepage": "https://github.com/PaulieB14/predictfun-subgraphs"}}
+---
+
 # Predict.fun MCP
 
 Structured access to Predict.fun prediction market data on BNB Chain — platform stats, market analysis, trader profiling, yield mechanics, and behavioral meta-tools.
