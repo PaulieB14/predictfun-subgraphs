@@ -161,6 +161,9 @@ function isKnownContract(addr: string): boolean {
   return addr.toLowerCase() in KNOWN_CONTRACTS;
 }
 
+// GraphQL-safe list of protocol addresses for where: { user_not_in / id_not_in } filters
+const PROTOCOL_ADDR_LIST = JSON.stringify(Object.keys(KNOWN_CONTRACTS));
+
 function contractLabel(addr: string): { is_contract: boolean; contract_name?: string; contract_role?: string } {
   const info = KNOWN_CONTRACTS[addr.toLowerCase()];
   if (info) return { is_contract: true, contract_name: info.name, contract_role: info.role };
@@ -748,17 +751,13 @@ server.tool(
       .describe("Minimum position size in USD"),
   },
   async ({ limit, min_position }) => {
-    // Fetch extra to account for filtering out protocol contracts
-    const fetchLimit = limit + Object.keys(KNOWN_CONTRACTS).length;
+    // Exclude protocol contracts at the GraphQL level (they dominate top positions)
     const data = await query(
       ENDPOINTS.positions,
-      `{ userPositions(first: ${fetchLimit}, orderBy: netQuantity, orderDirection: desc, where: { netQuantity_gt: "${min_position}" }) { id user { id totalSplitVolume totalPayouts } netQuantity totalSplit totalMerged realizedPayout condition { id openInterest resolved source } } }`
+      `{ userPositions(first: ${limit}, orderBy: netQuantity, orderDirection: desc, where: { netQuantity_gt: "${min_position}", user_not_in: ${PROTOCOL_ADDR_LIST} }) { id user { id totalSplitVolume totalPayouts } netQuantity totalSplit totalMerged realizedPayout condition { id openInterest resolved source } } }`
     );
 
-    // Filter out protocol contracts
-    const humanPositions = (data?.userPositions || []).filter(
-      (p: any) => !isKnownContract(p.user.id)
-    );
+    const humanPositions = data?.userPositions || [];
 
     const whaleIds = humanPositions.map((p: any) => p.condition.id);
     const whaleNames = await resolveMarketNames(whaleIds);
@@ -810,15 +809,13 @@ server.tool(
   },
   async ({ rank_by, limit }) => {
     const lines: string[] = [];
-    const fetchLimit = limit + Object.keys(KNOWN_CONTRACTS).length;
 
     if (rank_by === "payouts") {
       const data = await query(
         ENDPOINTS.positions,
-        `{ accounts(first: ${fetchLimit}, orderBy: totalPayouts, orderDirection: desc, where: { totalPayouts_gt: "0" }) { id splitCount mergeCount redeemCount totalSplitVolume totalMergeVolume totalPayouts } }`
+        `{ accounts(first: ${limit}, orderBy: totalPayouts, orderDirection: desc, where: { totalPayouts_gt: "0", id_not_in: ${PROTOCOL_ADDR_LIST} }) { id splitCount mergeCount redeemCount totalSplitVolume totalMergeVolume totalPayouts } }`
       );
-      const humans = (data?.accounts || []).filter((a: any) => !isKnownContract(a.id));
-      const sliced = humans.slice(0, limit);
+      const sliced = (data?.accounts || []).slice(0, limit);
       const addrTypes = await classifyAddresses(sliced.map((a: any) => a.id));
       lines.push(`# Top ${limit} Traders by Payouts\n`);
       lines.push(`*Protocol contracts excluded*\n`);
@@ -838,10 +835,9 @@ server.tool(
       const orderBy = rank_by === "trades" ? "totalTrades" : "totalVolume";
       const data = await query(
         ENDPOINTS.orderbook,
-        `{ accounts(first: ${fetchLimit}, orderBy: ${orderBy}, orderDirection: desc) { id totalTrades totalVolume totalFees makerTrades takerTrades } }`
+        `{ accounts(first: ${limit}, orderBy: ${orderBy}, orderDirection: desc, where: { id_not_in: ${PROTOCOL_ADDR_LIST} }) { id totalTrades totalVolume totalFees makerTrades takerTrades } }`
       );
-      const humans = (data?.accounts || []).filter((a: any) => !isKnownContract(a.id));
-      const sliced = humans.slice(0, limit);
+      const sliced = (data?.accounts || []).slice(0, limit);
       const addrTypes = await classifyAddresses(sliced.map((a: any) => a.id));
       const label = rank_by === "trades" ? "Trades" : "Volume";
       lines.push(`# Top ${limit} Traders by ${label}\n`);
@@ -1137,11 +1133,10 @@ server.tool(
       case "whale_accumulator": {
         const data = await query(
           ENDPOINTS.positions,
-          `{ userPositions(first: 100, orderBy: netQuantity, orderDirection: desc, where: { netQuantity_gt: "0" }) { user { id } netQuantity condition { id openInterest splitCount } } }`
+          `{ userPositions(first: 100, orderBy: netQuantity, orderDirection: desc, where: { netQuantity_gt: "0", user_not_in: ${PROTOCOL_ADDR_LIST} }) { user { id } netQuantity condition { id openInterest splitCount } } }`
         );
         for (const p of data?.userPositions || []) {
           if (results.length >= limit) break;
-          if (isKnownContract(p.user.id)) continue;
           const oi = parseFloat(p.condition.openInterest);
           const net = parseFloat(p.netQuantity);
           if (oi > 0 && net / oi >= PERSONA_THRESHOLDS.whale_oi_pct) {

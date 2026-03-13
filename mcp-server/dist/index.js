@@ -141,6 +141,8 @@ const KNOWN_CONTRACTS = {
 function isKnownContract(addr) {
     return addr.toLowerCase() in KNOWN_CONTRACTS;
 }
+// GraphQL-safe list of protocol addresses for where: { user_not_in / id_not_in } filters
+const PROTOCOL_ADDR_LIST = JSON.stringify(Object.keys(KNOWN_CONTRACTS));
 function contractLabel(addr) {
     const info = KNOWN_CONTRACTS[addr.toLowerCase()];
     if (info)
@@ -560,11 +562,9 @@ server.tool("get_whale_positions", "Find the largest position holders across all
         .default(1000)
         .describe("Minimum position size in USD"),
 }, async ({ limit, min_position }) => {
-    // Fetch extra to account for filtering out protocol contracts
-    const fetchLimit = limit + Object.keys(KNOWN_CONTRACTS).length;
-    const data = await query(ENDPOINTS.positions, `{ userPositions(first: ${fetchLimit}, orderBy: netQuantity, orderDirection: desc, where: { netQuantity_gt: "${min_position}" }) { id user { id totalSplitVolume totalPayouts } netQuantity totalSplit totalMerged realizedPayout condition { id openInterest resolved source } } }`);
-    // Filter out protocol contracts
-    const humanPositions = (data?.userPositions || []).filter((p) => !isKnownContract(p.user.id));
+    // Exclude protocol contracts at the GraphQL level (they dominate top positions)
+    const data = await query(ENDPOINTS.positions, `{ userPositions(first: ${limit}, orderBy: netQuantity, orderDirection: desc, where: { netQuantity_gt: "${min_position}", user_not_in: ${PROTOCOL_ADDR_LIST} }) { id user { id totalSplitVolume totalPayouts } netQuantity totalSplit totalMerged realizedPayout condition { id openInterest resolved source } } }`);
+    const humanPositions = data?.userPositions || [];
     const whaleIds = humanPositions.map((p) => p.condition.id);
     const whaleNames = await resolveMarketNames(whaleIds);
     const sliced = humanPositions.slice(0, limit);
@@ -600,11 +600,9 @@ server.tool("get_leaderboard", "Get the top traders on Predict.fun by volume, P&
         .describe("Number of traders"),
 }, async ({ rank_by, limit }) => {
     const lines = [];
-    const fetchLimit = limit + Object.keys(KNOWN_CONTRACTS).length;
     if (rank_by === "payouts") {
-        const data = await query(ENDPOINTS.positions, `{ accounts(first: ${fetchLimit}, orderBy: totalPayouts, orderDirection: desc, where: { totalPayouts_gt: "0" }) { id splitCount mergeCount redeemCount totalSplitVolume totalMergeVolume totalPayouts } }`);
-        const humans = (data?.accounts || []).filter((a) => !isKnownContract(a.id));
-        const sliced = humans.slice(0, limit);
+        const data = await query(ENDPOINTS.positions, `{ accounts(first: ${limit}, orderBy: totalPayouts, orderDirection: desc, where: { totalPayouts_gt: "0", id_not_in: ${PROTOCOL_ADDR_LIST} }) { id splitCount mergeCount redeemCount totalSplitVolume totalMergeVolume totalPayouts } }`);
+        const sliced = (data?.accounts || []).slice(0, limit);
         const addrTypes = await classifyAddresses(sliced.map((a) => a.id));
         lines.push(`# Top ${limit} Traders by Payouts\n`);
         lines.push(`*Protocol contracts excluded*\n`);
@@ -620,9 +618,8 @@ server.tool("get_leaderboard", "Get the top traders on Predict.fun by volume, P&
     }
     else {
         const orderBy = rank_by === "trades" ? "totalTrades" : "totalVolume";
-        const data = await query(ENDPOINTS.orderbook, `{ accounts(first: ${fetchLimit}, orderBy: ${orderBy}, orderDirection: desc) { id totalTrades totalVolume totalFees makerTrades takerTrades } }`);
-        const humans = (data?.accounts || []).filter((a) => !isKnownContract(a.id));
-        const sliced = humans.slice(0, limit);
+        const data = await query(ENDPOINTS.orderbook, `{ accounts(first: ${limit}, orderBy: ${orderBy}, orderDirection: desc, where: { id_not_in: ${PROTOCOL_ADDR_LIST} }) { id totalTrades totalVolume totalFees makerTrades takerTrades } }`);
+        const sliced = (data?.accounts || []).slice(0, limit);
         const addrTypes = await classifyAddresses(sliced.map((a) => a.id));
         const label = rank_by === "trades" ? "Trades" : "Volume";
         lines.push(`# Top ${limit} Traders by ${label}\n`);
@@ -841,12 +838,10 @@ server.tool("scan_trader_personas", "Find traders matching a specific behavioral
     const results = [];
     switch (persona) {
         case "whale_accumulator": {
-            const data = await query(ENDPOINTS.positions, `{ userPositions(first: 100, orderBy: netQuantity, orderDirection: desc, where: { netQuantity_gt: "0" }) { user { id } netQuantity condition { id openInterest splitCount } } }`);
+            const data = await query(ENDPOINTS.positions, `{ userPositions(first: 100, orderBy: netQuantity, orderDirection: desc, where: { netQuantity_gt: "0", user_not_in: ${PROTOCOL_ADDR_LIST} }) { user { id } netQuantity condition { id openInterest splitCount } } }`);
             for (const p of data?.userPositions || []) {
                 if (results.length >= limit)
                     break;
-                if (isKnownContract(p.user.id))
-                    continue;
                 const oi = parseFloat(p.condition.openInterest);
                 const net = parseFloat(p.netQuantity);
                 if (oi > 0 && net / oi >= PERSONA_THRESHOLDS.whale_oi_pct) {
