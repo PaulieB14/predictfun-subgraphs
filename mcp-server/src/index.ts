@@ -19,11 +19,10 @@ if (!API_KEY) {
   process.exit(1);
 }
 
-// Predict.fun REST API key (optional — enables market name hydration)
-const PREDICT_API_KEY = process.env.PREDICT_API_KEY || "";
-const PREDICT_API_BASE = PREDICT_API_KEY
-  ? "https://api.predict.fun"
-  : "https://api-testnet.predict.fun";
+// Predict.fun REST API key — bundled default enables market name hydration out of the box.
+// Override with PREDICT_API_KEY env var to use your own key (higher rate limits).
+const PREDICT_API_KEY = process.env.PREDICT_API_KEY || "cdec6be2-15aa-4dfb-8086-16f4a462e2a3";
+const PREDICT_API_BASE = "https://api.predict.fun";
 
 // Published subgraph IDs on The Graph Network
 const SUBGRAPH_IDS = {
@@ -134,9 +133,43 @@ function fmtAddr(addr: string): string {
   return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
 }
 
+// ─── Predict.fun API Helper ──────────────────────────────────────────────────
+// Centralized fetch for predict.fun REST API with auth and rate limit tracking
+
+async function predictApiFetch(
+  path: string,
+  params: Record<string, string> = {}
+): Promise<{ ok: boolean; data: any; rateLimitRemaining: number | null }> {
+  if (!PREDICT_API_KEY) return { ok: false, data: null, rateLimitRemaining: null };
+
+  const url = new URL(`${PREDICT_API_BASE}${path}`);
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+
+  try {
+    const res = await fetch(url.toString(), {
+      headers: { "x-api-key": PREDICT_API_KEY, "Content-Type": "application/json" },
+    });
+
+    const remaining = res.headers.get("ratelimit-remaining");
+    const reset = res.headers.get("ratelimit-reset");
+    const rateLimitRemaining = remaining !== null ? parseInt(remaining) : null;
+
+    if (rateLimitRemaining !== null && rateLimitRemaining < 20) {
+      console.error(`[predict.fun] Rate limit low: ${rateLimitRemaining} remaining, resets ${reset}`);
+    }
+
+    if (!res.ok) return { ok: false, data: null, rateLimitRemaining };
+    const data = await res.json();
+    return { ok: true, data, rateLimitRemaining };
+  } catch {
+    return { ok: false, data: null, rateLimitRemaining: null };
+  }
+}
+
 // ─── Predict.fun API market name cache ──────────────────────────────────────
 // Maps conditionId → title/question from the REST API
 const marketNameCache = new Map<string, string>();
+const marketIdCache = new Map<string, number>(); // conditionId → numeric API id
 let marketCacheLoaded = false;
 let marketCacheLoadedAt = 0;
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
@@ -144,30 +177,28 @@ const CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 async function loadMarketNamesFromAPI(): Promise<void> {
   const now = Date.now();
   if (marketCacheLoaded && now - marketCacheLoadedAt < CACHE_TTL_MS) return;
-
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (PREDICT_API_KEY) headers["x-api-key"] = PREDICT_API_KEY;
+  if (!PREDICT_API_KEY) return;
 
   try {
     let cursor: string | null = null;
     let pages = 0;
-    const maxPages = 20; // safety limit
+    const maxPages = 20;
 
     do {
-      const url = new URL(`${PREDICT_API_BASE}/v1/markets`);
-      url.searchParams.set("first", "100");
-      if (cursor) url.searchParams.set("after", cursor);
+      const params: Record<string, string> = { first: "100" };
+      if (cursor) params.after = cursor;
 
-      const res = await fetch(url.toString(), { headers });
-      if (!res.ok) break;
+      const { ok, data } = await predictApiFetch("/v1/markets", params);
+      if (!ok || !data) break;
 
-      const json: any = await res.json();
-      for (const m of json.data || []) {
-        if (m.conditionId && (m.title || m.question)) {
-          marketNameCache.set(m.conditionId.toLowerCase(), m.title || m.question);
+      for (const m of data.data || []) {
+        if (m.conditionId) {
+          const key = m.conditionId.toLowerCase();
+          if (m.title || m.question) marketNameCache.set(key, m.title || m.question);
+          if (m.id) marketIdCache.set(key, m.id);
         }
       }
-      cursor = json.cursor || null;
+      cursor = data.cursor || null;
       pages++;
     } while (cursor && pages < maxPages);
 
@@ -582,6 +613,108 @@ server.tool(
         lines.push(
           `| ${p.user.id} | ${typeCol} | ${fmtUsd(p.netQuantity)} | ${fmtUsd(p.totalSplit)} | ${fmtUsd(p.totalMerged)} |`
         );
+      });
+    }
+
+    return { content: [{ type: "text", text: lines.join("\n") }] };
+  }
+);
+
+// ─── Tool: Live Orderbook ────────────────────────────────────────────────────
+
+server.tool(
+  "get_market_orderbook",
+  "Get the live order book for a Predict.fun market — current bids and asks with prices and sizes. Requires PREDICT_API_KEY. Provide market_id (integer from Predict.fun API) or condition_id. Use this to see the current state of the market, not historical trades.",
+  {
+    condition_id: z
+      .string()
+      .optional()
+      .describe("The conditionId (0x hex string) of the market — used to look up the numeric market_id from cache"),
+    market_id: z
+      .number()
+      .int()
+      .optional()
+      .describe("The numeric market ID from Predict.fun API (e.g. 1187). More reliable than condition_id lookup."),
+  },
+  async ({ condition_id, market_id }) => {
+    if (!PREDICT_API_KEY) {
+      return {
+        content: [{ type: "text", text: "PREDICT_API_KEY is required for live orderbook data. Set it in your .env file." }],
+      };
+    }
+
+    if (!condition_id && !market_id) {
+      return {
+        content: [{ type: "text", text: "Provide either condition_id or market_id." }],
+      };
+    }
+
+    let numericId: number | undefined = market_id;
+
+    if (!numericId && condition_id) {
+      const condKey = condition_id.toLowerCase();
+      await loadMarketNamesFromAPI();
+      numericId = marketIdCache.get(condKey);
+
+      if (!numericId) {
+        // Cache miss — try fetching the single market directly via conditionId search
+        // The API doesn't support conditionId filter, so we inform the user
+        return {
+          content: [{ type: "text", text: `Market ${condition_id} not found in API cache. Try providing the numeric market_id instead (find it via get_top_markets or the Predict.fun website URL).` }],
+        };
+      }
+    }
+
+    const { ok, data, rateLimitRemaining } = await predictApiFetch(`/v1/markets/${numericId}/orderbook`);
+
+    if (!ok || !data) {
+      return {
+        content: [{ type: "text", text: `Could not fetch orderbook for market ${numericId} (${condition_id}). The market may be resolved or inactive.` }],
+      };
+    }
+
+    const ob = data.data ?? data; // response is { success, data: { bids, asks, ... } }
+    // bids/asks are arrays of [price, size] tuples
+    const allBids: number[][] = ob.bids ?? [];
+    const allAsks: number[][] = ob.asks ?? [];
+
+    const condKey = condition_id?.toLowerCase() ?? "";
+    const names = condKey ? await resolveMarketNames([condKey]) : new Map<string, string>();
+    const title = condKey ? names.get(condKey) : undefined;
+    const lines: string[] = [`# Live Orderbook: ${title || condition_id || `Market ${numericId}`}\n`];
+    lines.push(`*Market ID: ${numericId}*`);
+    if (rateLimitRemaining !== null) lines.push(`*Rate limit: ${rateLimitRemaining} remaining*`);
+    lines.push("");
+
+    if (allBids.length === 0 && allAsks.length === 0) {
+      lines.push("No active orders in this market.");
+      return { content: [{ type: "text", text: lines.join("\n") }] };
+    }
+
+    const bestBidPrice = allBids[0]?.[0];
+    const bestAskPrice = allAsks[0]?.[0];
+    if (bestBidPrice !== undefined && bestAskPrice !== undefined) {
+      const spread = (bestAskPrice - bestBidPrice).toFixed(4);
+      const mid = (bestBidPrice + bestAskPrice) / 2;
+      lines.push(`**Best Bid:** $${bestBidPrice.toFixed(4)} | **Best Ask:** $${bestAskPrice.toFixed(4)} | **Spread:** $${spread}`);
+      lines.push(`**Mid Price:** $${mid.toFixed(4)} | **Implied YES Prob:** ${(mid * 100).toFixed(1)}%\n`);
+    }
+
+    if (allBids.length > 0) {
+      lines.push("## Bids (Buy YES)");
+      lines.push("| Price | Size |");
+      lines.push("|---|---|");
+      allBids.slice(0, 10).forEach(([price, size]) => {
+        lines.push(`| $${price.toFixed(4)} | ${fmtUsd(size.toString())} |`);
+      });
+    }
+
+    if (allAsks.length > 0) {
+      lines.push("\n## Asks (Sell YES / Buy NO)");
+      lines.push("| Price | Size |");
+      lines.push("|---|---|");
+      allAsks.slice(0, 10).forEach(([price, size]) => {
+        lines.push(`| $${price.toFixed(4)} | ${fmtUsd(size.toString())} |`);
       });
     }
 
