@@ -535,7 +535,7 @@ server.tool(
   async ({ condition_id }) => {
     const id = condition_id.toLowerCase();
 
-    const [posData, obData] = await Promise.all([
+    const [posData, obData, yieldData] = await Promise.all([
       query(
         ENDPOINTS.positions,
         `{ condition(id: "${id}") { id oracle questionId outcomeSlotCount resolved payoutNumerators openInterest splitCount mergeCount createdAt resolvedAt source } marketOpenInterest(id: "${id}") { amount splitCount mergeCount lastUpdated } userPositions(first: 5, orderBy: netQuantity, orderDirection: desc, where: { condition: "${id}", netQuantity_gt: "0" }) { id user { id } netQuantity totalSplit totalMerged } }`
@@ -543,6 +543,10 @@ server.tool(
       query(
         ENDPOINTS.orderbook,
         `{ market(id: "${id}") { id volume tradeCount fees exchange createdAt lastTradeAt } }`
+      ),
+      query(
+        ENDPOINTS.yield,
+        `{ oracleRequests(first: 1, where: { requester: "${id}" }) { id settled settledAt } tokenMappings(first: 1) { underlying vToken enabled totalDeposited } }`
       ),
     ]);
 
@@ -582,7 +586,15 @@ server.tool(
         const oi = parseFloat(cond.openInterest);
         if (oi > 0) {
           const daysSinceResolution = Math.round((nowUnix() - parseInt(cond.resolvedAt)) / 86400);
-          lines.push(`- **⚠ Zombie OI: ${fmtUsd(cond.openInterest)} unredeemed** (${daysSinceResolution} days since resolution — winners must manually redeem via UI)`);
+          // Cross-ref yield oracle: determine if OI is stuck waiting on oracle vs unredeemed by users
+          const oracleReq = yieldData?.oracleRequests?.[0];
+          if (oracleReq && !oracleReq.settled) {
+            lines.push(`- **⚠ Zombie OI: ${fmtUsd(cond.openInterest)} blocked** (${daysSinceResolution}d — oracle request unsettled, yield module cannot release funds until settlement)`);
+          } else if (oracleReq && oracleReq.settled) {
+            lines.push(`- **⚠ Zombie OI: ${fmtUsd(cond.openInterest)} unredeemed** (${daysSinceResolution}d since resolution, oracle settled ${fmtDate(oracleReq.settledAt)} — winners must manually redeem via UI)`);
+          } else {
+            lines.push(`- **⚠ Zombie OI: ${fmtUsd(cond.openInterest)} unredeemed** (${daysSinceResolution} days since resolution — winners must manually redeem via UI)`);
+          }
         }
       }
       lines.push(`- Open Interest: ${fmtUsd(cond.openInterest)}`);
@@ -596,6 +608,23 @@ server.tool(
       lines.push(`- Fees: ${fmtUsd(market.fees)}`);
       lines.push(`- Exchange: ${market.exchange}`);
       lines.push(`- Last Trade: ${fmtDate(market.lastTradeAt)}`);
+    }
+
+    // Yield subgraph: oracle request status + token mapping exposure
+    const oracleReqDetail = yieldData?.oracleRequests?.[0];
+    const tokenMapping = yieldData?.tokenMappings?.[0];
+    if (oracleReqDetail || tokenMapping) {
+      lines.push("\n## Yield / Oracle");
+      if (oracleReqDetail) {
+        lines.push(`- Oracle Request: ${oracleReqDetail.id}`);
+        lines.push(`- Settled: ${oracleReqDetail.settled ? `Yes (${fmtDate(oracleReqDetail.settledAt)})` : "No — pending settlement"}`);
+      }
+      if (tokenMapping) {
+        lines.push(`- Underlying Token: ${tokenMapping.underlying}`);
+        lines.push(`- vToken: ${tokenMapping.vToken}`);
+        lines.push(`- Vault Enabled: ${tokenMapping.enabled}`);
+        lines.push(`- Total Deposited: ${fmtUsd(tokenMapping.totalDeposited)}`);
+      }
     }
 
     if (posData.userPositions.length > 0) {
@@ -774,10 +803,12 @@ server.tool(
           : [`# Trader ${fmtAddr(address)}\n`];
 
     if (obAcct) {
+      const splitVol = parseFloat(posAcct?.totalSplitVolume || "0");
       const netPnl =
         parseFloat(posAcct?.totalPayouts || "0") -
-        parseFloat(posAcct?.totalSplitVolume || "0") +
+        splitVol +
         parseFloat(posAcct?.totalMergeVolume || "0");
+      const pnlUnreliable = posAcct && splitVol === 0 && parseFloat(obAcct.totalVolume) > 0;
 
       lines.push("## Trading Activity");
       lines.push(`- Total Trades: ${parseInt(obAcct.totalTrades).toLocaleString()}`);
@@ -793,7 +824,41 @@ server.tool(
         lines.push(`- Total Split (bought): ${fmtUsd(posAcct.totalSplitVolume)}`);
         lines.push(`- Total Merged (sold back): ${fmtUsd(posAcct.totalMergeVolume)}`);
         lines.push(`- Realized Payouts: ${fmtUsd(posAcct.totalPayouts)}`);
-        lines.push(`- Estimated Net P&L: ${fmtUsd(netPnl.toString())}`);
+        if (pnlUnreliable) {
+          lines.push(`- Estimated Net P&L: ⚠ unreliable — positions subgraph shows $0 invested but orderbook shows ${fmtUsd(obAcct.totalVolume)} traded`);
+          lines.push(`  > Wallet entered via orderbook buys (not collateral splits). Fetching fill-level breakdown from orderbook subgraph...`);
+          // Fetch recent fills as taker and maker to show USDC flow breakdown
+          try {
+            const [takerFills, makerFills] = await Promise.all([
+              query(ENDPOINTS.orderbook, `{ orderFilledEvents(first: 100, orderBy: timestamp, orderDirection: desc, where: { taker: "${addr}" }) { side takerAmountFilled fee timestamp } }`),
+              query(ENDPOINTS.orderbook, `{ orderFilledEvents(first: 100, orderBy: timestamp, orderDirection: desc, where: { maker: "${addr}" }) { side makerAmountFilled fee timestamp } }`),
+            ]);
+            const takerEvents = takerFills?.orderFilledEvents || [];
+            const makerEvents = makerFills?.orderFilledEvents || [];
+            // As taker: BUY side = USDC out, SELL side = USDC in
+            const takerBuyVol = takerEvents.filter((f: any) => f.side === "BUY").reduce((s: number, f: any) => s + parseFloat(f.takerAmountFilled), 0);
+            const takerSellVol = takerEvents.filter((f: any) => f.side === "SELL").reduce((s: number, f: any) => s + parseFloat(f.takerAmountFilled), 0);
+            // As maker: BUY side means taker bought, maker sold tokens → USDC in for maker; SELL side = USDC out for maker
+            const makerBuyVol = makerEvents.filter((f: any) => f.side === "BUY").reduce((s: number, f: any) => s + parseFloat(f.makerAmountFilled), 0);
+            const makerSellVol = makerEvents.filter((f: any) => f.side === "SELL").reduce((s: number, f: any) => s + parseFloat(f.makerAmountFilled), 0);
+            const totalFeesSampled = [...takerEvents, ...makerEvents].reduce((s: number, f: any) => s + parseFloat(f.fee || "0"), 0);
+            const usdcOut = takerBuyVol + makerSellVol;
+            const usdcIn = takerSellVol + makerBuyVol + parseFloat(posAcct.totalPayouts);
+            const sampleSize = takerEvents.length + makerEvents.length;
+            lines.push(`\n### Fill-Level Breakdown (last ${sampleSize} fills sampled)`);
+            lines.push(`- As Taker — BUY fills (USDC out): ${fmtUsd(takerBuyVol.toString())} (${takerEvents.filter((f: any) => f.side === "BUY").length} fills)`);
+            lines.push(`- As Taker — SELL fills (USDC in): ${fmtUsd(takerSellVol.toString())} (${takerEvents.filter((f: any) => f.side === "SELL").length} fills)`);
+            lines.push(`- As Maker — BUY fills (USDC in): ${fmtUsd(makerBuyVol.toString())} (${makerEvents.filter((f: any) => f.side === "BUY").length} fills)`);
+            lines.push(`- As Maker — SELL fills (USDC out): ${fmtUsd(makerSellVol.toString())} (${makerEvents.filter((f: any) => f.side === "SELL").length} fills)`);
+            lines.push(`- Fees in sample: ${fmtUsd(totalFeesSampled.toString())}`);
+            lines.push(`- Redemption payouts (positions): ${fmtUsd(posAcct.totalPayouts)}`);
+            lines.push(`- **Sampled net (USDC in − out): ${fmtUsd((usdcIn - usdcOut).toString())}** ⚠ partial — only last ${sampleSize} fills, full history has ${parseInt(obAcct.totalTrades).toLocaleString()} trades`);
+          } catch {
+            lines.push(`  > Fill-level query failed. Total OB volume: ${fmtUsd(obAcct.totalVolume)} across ${parseInt(obAcct.totalTrades).toLocaleString()} trades.`);
+          }
+        } else {
+          lines.push(`- Estimated Net P&L: ${fmtUsd(netPnl.toString())}`);
+        }
       }
     }
 
@@ -838,8 +903,8 @@ server.tool(
   "Get recent activity on Predict.fun: latest trades, splits, merges, redemptions, or yield events",
   {
     event_type: z
-      .enum(["trades", "splits", "merges", "redemptions", "yield_claims"])
-      .describe("Type of activity to fetch"),
+      .enum(["trades", "splits", "merges", "redemptions", "yield_claims", "all"])
+      .describe("Type of activity to fetch. Use 'all' for a unified chronological feed across all three subgraphs."),
     limit: z
       .number()
       .min(1)
@@ -941,6 +1006,48 @@ server.tool(
         });
         break;
       }
+
+      case "all": {
+        // Unified feed: fetch from all three subgraphs in parallel, merge + sort by timestamp
+        const perSource = Math.max(5, Math.ceil(limit * 1.5)); // fetch extra to have enough after merge
+        const [tradesData, splitsData, mergesData, redemptionsData, yieldData] = await Promise.all([
+          query(ENDPOINTS.orderbook, `{ orderFilledEvents(first: ${perSource}, orderBy: timestamp, orderDirection: desc) { id maker { id } taker { id } makerAmountFilled takerAmountFilled fee price side timestamp } }`),
+          query(ENDPOINTS.positions, `{ splitEvents(first: ${perSource}, orderBy: timestamp, orderDirection: desc) { id stakeholder amount timestamp condition { id } } }`),
+          query(ENDPOINTS.positions, `{ mergeEvents(first: ${perSource}, orderBy: timestamp, orderDirection: desc) { id stakeholder amount timestamp condition { id } } }`),
+          query(ENDPOINTS.positions, `{ redemptionEvents(first: ${perSource}, orderBy: timestamp, orderDirection: desc) { id redeemer payout timestamp condition { id } } }`),
+          query(ENDPOINTS.yield, `{ yieldClaimEvents(first: ${perSource}, orderBy: timestamp, orderDirection: desc) { id underlyingAmount timestamp transactionHash } }`),
+        ]);
+
+        type UnifiedEvent = { ts: number; source: string; type: string; who: string; amount: string; detail: string };
+        const unified: UnifiedEvent[] = [];
+
+        (tradesData?.orderFilledEvents || []).forEach((e: any) => {
+          unified.push({ ts: parseInt(e.timestamp), source: "orderbook", type: "TRADE", who: fmtAddr(e.taker.id), amount: fmtUsd(e.takerAmountFilled), detail: `${e.side} @ $${parseFloat(e.price).toFixed(4)}` });
+        });
+        (splitsData?.splitEvents || []).forEach((e: any) => {
+          unified.push({ ts: parseInt(e.timestamp), source: "positions", type: "SPLIT", who: fmtAddr(e.stakeholder), amount: fmtUsd(e.amount), detail: fmtAddr(e.condition.id) });
+        });
+        (mergesData?.mergeEvents || []).forEach((e: any) => {
+          unified.push({ ts: parseInt(e.timestamp), source: "positions", type: "MERGE", who: fmtAddr(e.stakeholder), amount: fmtUsd(e.amount), detail: fmtAddr(e.condition.id) });
+        });
+        (redemptionsData?.redemptionEvents || []).forEach((e: any) => {
+          unified.push({ ts: parseInt(e.timestamp), source: "positions", type: "REDEEM", who: fmtAddr(e.redeemer), amount: fmtUsd(e.payout), detail: fmtAddr(e.condition.id) });
+        });
+        (yieldData?.yieldClaimEvents || []).forEach((e: any) => {
+          unified.push({ ts: parseInt(e.timestamp), source: "yield", type: "YIELD", who: "—", amount: fmtUsd(e.underlyingAmount), detail: e.transactionHash?.slice(0, 12) + "…" });
+        });
+
+        unified.sort((a, b) => b.ts - a.ts);
+        const top = unified.slice(0, limit);
+
+        lines.push(`# Unified Activity Feed (last ${top.length} events across all subgraphs)\n`);
+        lines.push("| Time | Source | Type | Who | Amount | Detail |");
+        lines.push("|---|---|---|---|---|---|");
+        top.forEach((e) => {
+          lines.push(`| ${fmtDate(e.ts.toString())} | ${e.source} | ${e.type} | ${e.who} | ${e.amount} | ${e.detail} |`);
+        });
+        break;
+      }
     }
 
     return { content: [{ type: "text", text: lines.join("\n") }] };
@@ -1029,31 +1136,44 @@ server.tool(
     );
 
     const humanPositions = data?.userPositions || [];
-
-    const whaleIds = humanPositions.map((p: any) => p.condition.id);
-    const whaleNames = await resolveMarketNames(whaleIds);
-
     const sliced = humanPositions.slice(0, limit);
-    const addrTypes = await classifyAddresses(sliced.map((p: any) => p.user.id));
+
+    // Cross-reference orderbook + yield for all whale user addresses
+    const userIds = sliced.map((p: any) => p.user.id);
+    const userIdFilter = userIds.map((id: string) => `"${id}"`).join(",");
+    const [whaleNames, obData, yieldData] = await Promise.all([
+      resolveMarketNames(sliced.map((p: any) => p.condition.id)),
+      userIds.length > 0
+        ? query(ENDPOINTS.orderbook, `{ accounts(where: { id_in: [${userIdFilter}] }) { id totalTrades totalVolume totalFees makerTrades takerTrades } }`)
+        : Promise.resolve({ accounts: [] }),
+      userIds.length > 0
+        ? query(ENDPOINTS.yield, `{ yieldAccounts(where: { id_in: [${userIdFilter}] }) { id totalRewardsClaimed rewardClaimCount } }`)
+        : Promise.resolve({ yieldAccounts: [] }),
+    ]);
+    const obMap = new Map((obData?.accounts || []).map((a: any) => [a.id.toLowerCase(), a]));
+    const yieldMap = new Map((yieldData?.yieldAccounts || []).map((a: any) => [a.id.toLowerCase(), a]));
+    const addrTypes = await classifyAddresses(userIds);
 
     const lines = [
       `# Whale Positions (min ${fmtUsd(min_position.toString())})\n`,
-      `*Protocol contracts (${Object.keys(KNOWN_CONTRACTS).length}) excluded*\n`,
-      "| # | Address | Type | Position | Condition ID | Market | Market OI | % of OI |",
-      "|---|---|---|---|---|---|---|---|",
+      `*Protocol contracts (${Object.keys(KNOWN_CONTRACTS).length}) excluded · data from positions + orderbook + yield subgraphs*\n`,
+      "| # | Address | Type | Position | Invested (splits) | OB Volume | Yield Rewards | Market | OI | % OI | Flag |",
+      "|---|---|---|---|---|---|---|---|---|---|---|",
     ];
     sliced.forEach((p: any, i: number) => {
       const pctOi =
         parseFloat(p.condition.openInterest) > 0
-          ? (
-              (parseFloat(p.netQuantity) /
-                parseFloat(p.condition.openInterest)) *
-              100
-            ).toFixed(1)
+          ? ((parseFloat(p.netQuantity) / parseFloat(p.condition.openInterest)) * 100).toFixed(1)
           : "N/A";
       const typeTag = addrTypeLabel(addrTypes.get(p.user.id.toLowerCase()));
+      const ob = obMap.get(p.user.id.toLowerCase()) as any;
+      const yld = yieldMap.get(p.user.id.toLowerCase()) as any;
+      const splitVol = parseFloat(p.user.totalSplitVolume || "0");
+      const obVol = ob ? parseFloat(ob.totalVolume) : 0;
+      const yieldRew = yld ? fmtUsd(yld.totalRewardsClaimed) : "—";
+      const flag = splitVol === 0 && obVol > 0 ? "⚠ OB-only entry" : "";
       lines.push(
-        `| ${i + 1} | ${p.user.id} | ${typeTag} | ${fmtUsd(p.netQuantity)} | ${p.condition.id} | ${marketLabel(p.condition.id, whaleNames)} | ${fmtUsd(p.condition.openInterest)} | ${pctOi}% |`
+        `| ${i + 1} | ${p.user.id} | ${typeTag} | ${fmtUsd(p.netQuantity)} | ${fmtUsd(p.user.totalSplitVolume)} | ${ob ? fmtUsd(ob.totalVolume) : "—"} | ${yieldRew} | ${marketLabel(p.condition.id, whaleNames)} | ${fmtUsd(p.condition.openInterest)} | ${pctOi}% | ${flag} |`
       );
     });
 
@@ -1087,19 +1207,39 @@ server.tool(
         `{ accounts(first: ${limit}, orderBy: totalPayouts, orderDirection: desc, where: { totalPayouts_gt: "0", id_not_in: ${PROTOCOL_ADDR_LIST} }) { id splitCount mergeCount redeemCount totalSplitVolume totalMergeVolume totalPayouts } }`
       );
       const sliced = (data?.accounts || []).slice(0, limit);
-      const addrTypes = await classifyAddresses(sliced.map((a: any) => a.id));
+      const ids = sliced.map((a: any) => a.id);
+      const idFilter = ids.map((id: string) => `"${id}"`).join(",");
+
+      // Cross-reference orderbook + yield subgraphs for the same wallets
+      const [obData, yieldData] = await Promise.all([
+        query(ENDPOINTS.orderbook, `{ accounts(where: { id_in: [${idFilter}] }) { id totalTrades totalVolume totalFees } }`),
+        query(ENDPOINTS.yield, `{ yieldAccounts(where: { id_in: [${idFilter}] }) { id totalRewardsClaimed } }`),
+      ]);
+      const obMap = new Map((obData?.accounts || []).map((a: any) => [a.id.toLowerCase(), a]));
+      const yieldMap = new Map((yieldData?.yieldAccounts || []).map((a: any) => [a.id.toLowerCase(), a]));
+
+      const addrTypes = await classifyAddresses(ids);
       lines.push(`# Top ${limit} Traders by Payouts\n`);
-      lines.push(`*Protocol contracts excluded*\n`);
-      lines.push("| # | Address | Type | Payouts | Invested | Merged | Redemptions | Est. P&L |");
-      lines.push("|---|---|---|---|---|---|---|---|");
+      lines.push(`*Protocol contracts excluded · data from positions + orderbook + yield subgraphs*\n`);
+      lines.push("| # | Address | Type | Payouts | Invested | Merged | OB Volume | Fees | Yield | Redemptions | Est. P&L |");
+      lines.push("|---|---|---|---|---|---|---|---|---|---|---|");
       sliced.forEach((a: any, i: number) => {
+        const splitVol = parseFloat(a.totalSplitVolume);
         const pnl =
           parseFloat(a.totalPayouts) +
           parseFloat(a.totalMergeVolume) -
-          parseFloat(a.totalSplitVolume);
+          splitVol;
+        const ob = obMap.get(a.id.toLowerCase()) as any;
+        const yld = yieldMap.get(a.id.toLowerCase()) as any;
+        const obVol = ob ? parseFloat(ob.totalVolume) : 0;
+        const obFees = ob ? fmtUsd(ob.totalFees) : "—";
+        const yieldRew = yld ? fmtUsd(yld.totalRewardsClaimed) : "—";
+        const pnlDisplay = splitVol === 0 && obVol > 0
+          ? "⚠ orderbook-only"
+          : fmtUsd(pnl.toString());
         const typeTag = addrTypeLabel(addrTypes.get(a.id.toLowerCase()));
         lines.push(
-          `| ${i + 1} | ${a.id} | ${typeTag} | ${fmtUsd(a.totalPayouts)} | ${fmtUsd(a.totalSplitVolume)} | ${fmtUsd(a.totalMergeVolume)} | ${a.redeemCount} | ${fmtUsd(pnl.toString())} |`
+          `| ${i + 1} | ${a.id} | ${typeTag} | ${fmtUsd(a.totalPayouts)} | ${fmtUsd(a.totalSplitVolume)} | ${fmtUsd(a.totalMergeVolume)} | ${ob ? fmtUsd(ob.totalVolume) : "—"} | ${obFees} | ${yieldRew} | ${a.redeemCount} | ${pnlDisplay} |`
         );
       });
     } else {
@@ -1109,16 +1249,35 @@ server.tool(
         `{ accounts(first: ${limit}, orderBy: ${orderBy}, orderDirection: desc, where: { id_not_in: ${PROTOCOL_ADDR_LIST} }) { id totalTrades totalVolume totalFees makerTrades takerTrades } }`
       );
       const sliced = (data?.accounts || []).slice(0, limit);
-      const addrTypes = await classifyAddresses(sliced.map((a: any) => a.id));
+      const ids = sliced.map((a: any) => a.id);
+      const idFilter = ids.map((id: string) => `"${id}"`).join(",");
+
+      // Cross-reference positions + yield for same wallets
+      const [posData2, yieldData2] = await Promise.all([
+        ids.length > 0
+          ? query(ENDPOINTS.positions, `{ accounts(where: { id_in: [${idFilter}] }) { id totalPayouts totalSplitVolume redeemCount } }`)
+          : Promise.resolve({ accounts: [] }),
+        ids.length > 0
+          ? query(ENDPOINTS.yield, `{ yieldAccounts(where: { id_in: [${idFilter}] }) { id totalRewardsClaimed } }`)
+          : Promise.resolve({ yieldAccounts: [] }),
+      ]);
+      const posMap2 = new Map((posData2?.accounts || []).map((a: any) => [a.id.toLowerCase(), a]));
+      const yieldMap2 = new Map((yieldData2?.yieldAccounts || []).map((a: any) => [a.id.toLowerCase(), a]));
+
+      const addrTypes = await classifyAddresses(ids);
       const label = rank_by === "trades" ? "Trades" : "Volume";
       lines.push(`# Top ${limit} Traders by ${label}\n`);
-      lines.push(`*Protocol contracts excluded*\n`);
-      lines.push("| # | Address | Type | Volume | Trades | Fees | Maker | Taker |");
-      lines.push("|---|---|---|---|---|---|---|---|");
+      lines.push(`*Protocol contracts excluded · data from positions + orderbook + yield subgraphs*\n`);
+      lines.push("| # | Address | Type | Volume | Trades | Fees | Maker | Taker | Payouts | Yield Rewards |");
+      lines.push("|---|---|---|---|---|---|---|---|---|---|");
       sliced.forEach((a: any, i: number) => {
         const typeTag = addrTypeLabel(addrTypes.get(a.id.toLowerCase()));
+        const pos2 = posMap2.get(a.id.toLowerCase()) as any;
+        const yld2 = yieldMap2.get(a.id.toLowerCase()) as any;
+        const payouts = pos2 ? fmtUsd(pos2.totalPayouts) : "—";
+        const yieldRew = yld2 ? fmtUsd(yld2.totalRewardsClaimed) : "—";
         lines.push(
-          `| ${i + 1} | ${a.id} | ${typeTag} | ${fmtUsd(a.totalVolume)} | ${parseInt(a.totalTrades).toLocaleString()} | ${fmtUsd(a.totalFees)} | ${parseInt(a.makerTrades).toLocaleString()} | ${parseInt(a.takerTrades).toLocaleString()} |`
+          `| ${i + 1} | ${a.id} | ${typeTag} | ${fmtUsd(a.totalVolume)} | ${parseInt(a.totalTrades).toLocaleString()} | ${fmtUsd(a.totalFees)} | ${parseInt(a.makerTrades).toLocaleString()} | ${parseInt(a.takerTrades).toLocaleString()} | ${payouts} | ${yieldRew} |`
         );
       });
     }
@@ -1298,10 +1457,17 @@ server.tool(
       }
     }
 
+    // Detect orderbook-only wallet: trades on OB but never split collateral
+    const isObOnly = obAcct && posAcct &&
+      parseFloat(posAcct.totalSplitVolume) === 0 &&
+      parseFloat(obAcct.totalVolume) > 0;
+
     // 4. Early Mover: entered positions within 24h of market creation
+    // First try via splits (positions subgraph); fall back to orderbook fills for OB-only wallets
+    let earlyMoverFound = false;
     for (const p of positions) {
+      if (earlyMoverFound) break;
       if (parseFloat(p.totalSplit) > 0) {
-        // Check if there are splits from this user near market creation
         try {
           const splitData = await query(
             ENDPOINTS.positions,
@@ -1319,50 +1485,120 @@ server.tool(
                 evidence: {
                   condition_id: p.condition.id,
                   market_created_at: condCreated,
-                  first_split_at: splitTime,
+                  first_entry_at: splitTime,
                   seconds_after_creation: delta,
+                  entry_method: "split",
                 },
               });
-              break;
+              earlyMoverFound = true;
             }
           }
-        } catch {
-          // Skip if query fails
-        }
+        } catch { /* skip */ }
+      } else if (isObOnly) {
+        // OB-only: check first orderbook fill in this market
+        try {
+          const obFillData = await query(
+            ENDPOINTS.orderbook,
+            `{ orderFilledEvents(first: 1, orderBy: timestamp, orderDirection: asc, where: { taker: "${addr}", market: "${p.condition.id}" }) { timestamp } }`
+          );
+          const firstFill = obFillData?.orderFilledEvents?.[0];
+          if (firstFill) {
+            const condCreated = parseInt(p.condition.createdAt);
+            const fillTime = parseInt(firstFill.timestamp);
+            const delta = fillTime - condCreated;
+            if (delta >= 0 && delta <= PERSONA_THRESHOLDS.early_mover_window) {
+              personas.push({
+                persona: "early_mover",
+                confidence: delta < 3600 ? "high" : "medium",
+                evidence: {
+                  condition_id: p.condition.id,
+                  market_created_at: condCreated,
+                  first_entry_at: fillTime,
+                  seconds_after_creation: delta,
+                  entry_method: "orderbook_fill",
+                },
+              });
+              earlyMoverFound = true;
+            }
+          }
+        } catch { /* skip */ }
       }
     }
 
-    // 5. Resolution Sniper: large splits within 48h before resolution
+    // 5. Resolution Sniper: large activity within 48h before resolution
+    // Use splits for split-entry wallets; use OB fills for OB-only wallets
     const resolvedPositions = positions.filter((p: any) => p.condition.resolved && p.condition.resolvedAt);
     for (const p of resolvedPositions.slice(0, 5)) {
       const resolvedAt = parseInt(p.condition.resolvedAt);
       const windowStart = resolvedAt - PERSONA_THRESHOLDS.sniper_window;
       try {
-        const splitData = await query(
-          ENDPOINTS.positions,
-          `{ splitEvents(first: 3, orderBy: amount, orderDirection: desc, where: { stakeholder: "${addr}", condition: "${p.condition.id}", timestamp_gt: "${windowStart}", timestamp_lt: "${resolvedAt}" }) { amount timestamp } }`
-        );
-        if (splitData?.splitEvents?.length > 0) {
-          const totalLateSplits = splitData.splitEvents.reduce(
-            (sum: number, s: any) => sum + parseFloat(s.amount), 0
+        if (!isObOnly) {
+          const splitData = await query(
+            ENDPOINTS.positions,
+            `{ splitEvents(first: 3, orderBy: amount, orderDirection: desc, where: { stakeholder: "${addr}", condition: "${p.condition.id}", timestamp_gt: "${windowStart}", timestamp_lt: "${resolvedAt}" }) { amount timestamp } }`
           );
-          if (totalLateSplits > 100) {
-            personas.push({
-              persona: "resolution_sniper",
-              confidence: totalLateSplits > 1000 ? "high" : "medium",
-              evidence: {
-                condition_id: p.condition.id,
-                resolved_at: resolvedAt,
-                late_split_volume: Math.round(totalLateSplits * 100) / 100,
-                splits_in_window: splitData.splitEvents.length,
-              },
-            });
-            break;
+          if (splitData?.splitEvents?.length > 0) {
+            const totalLateSplits = splitData.splitEvents.reduce(
+              (sum: number, s: any) => sum + parseFloat(s.amount), 0
+            );
+            if (totalLateSplits > 100) {
+              personas.push({
+                persona: "resolution_sniper",
+                confidence: totalLateSplits > 1000 ? "high" : "medium",
+                evidence: {
+                  condition_id: p.condition.id,
+                  resolved_at: resolvedAt,
+                  late_activity_volume: Math.round(totalLateSplits * 100) / 100,
+                  events_in_window: splitData.splitEvents.length,
+                  detection_method: "split_events",
+                },
+              });
+              break;
+            }
+          }
+        } else {
+          // OB-only: look for large taker fills in the pre-resolution window
+          const obFillData = await query(
+            ENDPOINTS.orderbook,
+            `{ orderFilledEvents(first: 5, orderBy: takerAmountFilled, orderDirection: desc, where: { taker: "${addr}", market: "${p.condition.id}", timestamp_gt: "${windowStart}", timestamp_lt: "${resolvedAt}" }) { takerAmountFilled timestamp } }`
+          );
+          if (obFillData?.orderFilledEvents?.length > 0) {
+            const totalLateVolume = obFillData.orderFilledEvents.reduce(
+              (sum: number, f: any) => sum + parseFloat(f.takerAmountFilled), 0
+            );
+            if (totalLateVolume > 100) {
+              personas.push({
+                persona: "resolution_sniper",
+                confidence: totalLateVolume > 1000 ? "high" : "medium",
+                evidence: {
+                  condition_id: p.condition.id,
+                  resolved_at: resolvedAt,
+                  late_activity_volume: Math.round(totalLateVolume * 100) / 100,
+                  events_in_window: obFillData.orderFilledEvents.length,
+                  detection_method: "orderbook_fills",
+                },
+              });
+              break;
+            }
           }
         }
-      } catch {
-        // Skip
-      }
+      } catch { /* skip */ }
+    }
+
+    // 6. Orderbook-Only Trader: significant OB volume but zero split collateral
+    if (isObOnly) {
+      const trades = parseInt(obAcct.totalTrades);
+      const volume = parseFloat(obAcct.totalVolume);
+      personas.push({
+        persona: "orderbook_only_trader",
+        confidence: volume > 10000 ? "high" : "medium",
+        evidence: {
+          total_trades: trades,
+          total_volume: volume,
+          total_split_volume: 0,
+          note: "Enters positions via orderbook buys rather than collateral splits. P&L from positions subgraph is unreliable.",
+        },
+      });
     }
 
     const result = {
@@ -1372,8 +1608,11 @@ server.tool(
       summary: {
         total_trades: obAcct ? parseInt(obAcct.totalTrades) : 0,
         total_volume: obAcct ? parseFloat(obAcct.totalVolume) : 0,
+        total_split_volume: posAcct ? parseFloat(posAcct.totalSplitVolume) : 0,
         active_positions: positions.length,
         has_yield_activity: !!yldAcct,
+        is_orderbook_only: !!isObOnly,
+        data_sources: ["positions", "orderbook", "yield"],
       },
     };
 
